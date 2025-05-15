@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "563379077533",
+    "project_id": "smart-cane-prototype",
+    "storage_bucket": "smart-cane-prototype.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:563379077533:android:22900ad0b861eff4e06f74",
+        "android_client_info": {
+          "package_name": "com.sept.learning_factory.smart_cane_prototype"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDqyK9VvOmbLN-AeJdx8vVM7AwmqPBAAhg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
