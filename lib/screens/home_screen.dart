@@ -6,8 +6,7 @@ import 'package:google_sign_in/google_sign_in.dart'; // Keep for sign out
 import 'package:smart_cane_prototype/services/ble_service.dart';
 import 'dart:async';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-// Removed the import for fall_detection_overlay.dart as we are not there yet.
-// import 'package:smart_cane_prototype/widgets/fall_detection_overlay.dart';
+import 'package:smart_cane_prototype/widgets/fall_detection_overlay.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -26,6 +25,7 @@ class _HomeScreenState extends State<HomeScreen> {
   BluetoothDevice? _currentConnectedDevice;
   bool _calibrationSuccess = false; // State to show calibration success feedback
   Timer? _calibrationTimer; // Timer for the calibration feedback duration
+  bool _isFallOverlayVisible = false; // Add this line
 
   StreamSubscription<BleConnectionState>? _connectionStateSubscription;
   StreamSubscription<List<ScanResult>>? _scanResultsSubscription;
@@ -85,30 +85,35 @@ class _HomeScreenState extends State<HomeScreen> {
       });
     });
 
-    // Listen for fall detection events and update the UI state
     _fallDetectedSubscription = _bleService.fallDetectedStream.listen((bool? detected) {
-      print("HomeScreen received fall detected: $detected");
-      // Update the UI state variable when a fall is detected
-      if (detected == true) {
+      print("HomeScreen received fall detected from stream: $detected, current UI state: $_currentFallDetected, overlay visible: $_isFallOverlayVisible");
+      if (detected == true && !_isFallOverlayVisible) {
+        // Only show overlay if a fall is truly detected AND the overlay isn't already up
         setState(() {
-          _currentFallDetected = true;
+          _currentFallDetected = true; // Ensure UI state is consistent
         });
-        print("Fall detected in HomeScreen! UI state updated.");
-        // Note: The overlay logic will be added later, triggered by this state change.
+        _showFallDetectionOverlay();
+        print("Fall detected in HomeScreen! Triggering overlay.");
       } else if (detected == false && _currentFallDetected) {
-        // If cane sends 'false' notification while fall is active in UI state, reset the UI state.
+        // This case handles if the BLE service sends a 'false' (e.g. cane reset)
+        // while the app thinks a fall is active.
+        print("Fall reset by BLE service or external means.");
+        _dismissFallDetectionOverlay(); // Ensure overlay is dismissed
         setState(() {
           _currentFallDetected = false;
         });
-        _bleService.resetFallDetectedState(); // Reset service state as well if cane signals reset
-      } else if (detected == null) {
-        print("HomeScreen received null fall detected state from stream.");
+        // No need to call _bleService.resetFallDetectedState() here if the service itself initiated the 'false'
+      } else if (detected == null && _currentFallDetected) {
+        // If stream sends null but UI still thinks fall is active
+        print("Fall state became null from stream, dismissing overlay if active.");
+        _dismissFallDetectionOverlay();
         setState(() {
           _currentFallDetected = false; // Assume no fall on null
         });
       }
+      // If detected == false and _currentFallDetected is already false, do nothing.
+      // If detected == true and _isFallOverlayVisible is true, do nothing.
     });
-
 
     _connectedDeviceSubscription = _bleService.connectedDeviceStream.listen((device) {
       print("HomeScreen received connected device: ${device?.platformName}");
@@ -130,27 +135,117 @@ class _HomeScreenState extends State<HomeScreen> {
     print("HomeScreen initState finished.");
   }
 
+  // Inside _HomeScreenState class
+
+  void _showFallDetectionOverlay() {
+    if (!mounted || _isFallOverlayVisible) return; // Prevent showing if not mounted or already visible
+
+    print("HomeScreen: Attempting to show fall detection overlay.");
+    setState(() {
+      _isFallOverlayVisible = true;
+    });
+
+    Navigator.of(context).push(
+      PageRouteBuilder(
+        opaque: false, // Makes the route see-through to the one below if needed (though our overlay is opaque)
+        pageBuilder: (BuildContext context, _, __) {
+          return FallDetectionOverlay(
+            onImOk: () {
+              print("HomeScreen: 'I'm OK' pressed from overlay.");
+              _dismissFallDetectionOverlay();
+              _handleFallDetectedReset(); // Use existing reset logic
+            },
+            onCallEmergency: () {
+              print("HomeScreen: 'Call Emergency' pressed from overlay.");
+              _dismissFallDetectionOverlay(); // Dismiss before calling
+              // We'll implement the actual call in a later step
+              // For now, let's just log it and reset the fall state
+              print("TODO: Implement emergency call logic here.");
+              _bleService.makePhoneCall('+19058028483'); // Temporary direct call for testing
+              _handleFallDetectedReset(); // Reset fall state after initiating call
+            },
+            // countdownSeconds will be used when we make the overlay stateful
+          );
+        },
+      ),
+    ).then((_) {
+      // This `then` callback executes when the pushed route is popped.
+      // Useful for cleanup if the overlay is dismissed by other means (e.g. back button)
+      print("HomeScreen: Fall detection overlay was popped.");
+      if (_isFallOverlayVisible) { // Check if it was dismissed by our methods already
+        setState(() {
+          _isFallOverlayVisible = false;
+          // If the overlay was dismissed by back button, ensure _currentFallDetected is also reset
+          if (_currentFallDetected) {
+            _handleFallDetectedReset();
+          }
+        });
+      }
+    });
+  }
+
+  void _dismissFallDetectionOverlay() {
+    if (_isFallOverlayVisible && mounted) {
+      print("HomeScreen: Dismissing fall detection overlay.");
+      Navigator.of(context).pop(); // Pop the overlay route
+      // The state update (_isFallOverlayVisible = false) will be handled in the .then() of push
+      // or by direct calls if pop is initiated elsewhere.
+      // To be safe, we can also set it here if pop is called directly
+      // without going through the overlay's buttons.
+      // However, the `.then()` above is generally the more robust place.
+      if (mounted) { // Ensure widget is still mounted before calling setState
+        setState(() {
+          _isFallOverlayVisible = false;
+          // No need to reset _currentFallDetected here as it's handled by onImOk or onCallEmergency
+        });
+      }
+    } else {
+      print("HomeScreen: Overlay not visible or not mounted, no need to dismiss.");
+    }
+  }
+
+  // Ensure _handleFallDetectedReset also considers the overlay
+  void _handleFallDetectedReset() {
+    print("HomeScreen: Fall Detected Reset requested.");
+    _dismissFallDetectionOverlay(); // Ensure overlay is dismissed
+    setState(() {
+      _currentFallDetected = false; // Reset UI state immediately
+    });
+    _bleService.resetFallDetectedState(); // Notify the service/ESP32 to clear its state
+  }
+
+  // Modify your existing _handleSignOut to also dismiss overlay
+  Future<void> _handleSignOut() async {
+    _dismissFallDetectionOverlay(); // Dismiss overlay before signing out
+    try {
+      print("HomeScreen: Attempting sign out.");
+      await GoogleSignIn().signOut();
+      print('Signed out');
+      _bleService.disconnectCurrentDevice();
+      if (mounted) {
+        Navigator.pushReplacementNamed(context, '/login');
+      }
+    } catch (error) {
+      print('Error signing out: $error');
+    }
+  }
+
+  // Modify dispose to also ensure overlay is dismissed if active (though less likely)
   @override
   void dispose() {
     print("HomeScreen dispose");
+    _dismissFallDetectionOverlay(); // Attempt to dismiss overlay
+    // ... rest of your dispose method
     _connectionStateSubscription?.cancel();
     _scanResultsSubscription?.cancel();
     _batteryLevelSubscription?.cancel();
     _fallDetectedSubscription?.cancel();
     _connectedDeviceSubscription?.cancel();
-
-    _calibrationTimer?.cancel(); // Cancel the calibration timer
-
-    // Removed overlay removal logic
-
-    _bleService.disconnectCurrentDevice(); // Disconnect from BLE on screen dispose
-
+    _calibrationTimer?.cancel();
+    _bleService.disconnectCurrentDevice();
     super.dispose();
     print("HomeScreen dispose finished.");
   }
-
-  // Removed _showFallDetectionOverlay and _hideFallDetectionOverlay methods
-
 
   // --- Button Actions ---
   void _handleConnectDisconnect() {
@@ -188,30 +283,6 @@ class _HomeScreenState extends State<HomeScreen> {
       print("HomeScreen: Cannot calibrate: Not connected to the cane.");
     }
   }
-
-  void _handleFallDetectedReset() {
-    print("HomeScreen: Fall Detected Reset requested from UI.");
-    setState(() {
-      _currentFallDetected = false; // Reset UI state immediately
-    });
-    _bleService.resetFallDetectedState(); // Notify the service/ESP32 to clear its state
-  }
-
-
-  Future<void> _handleSignOut() async {
-    try {
-      print("HomeScreen: Attempting sign out.");
-      await GoogleSignIn().signOut(); // Use the actual Google Sign-In sign out
-      print('Signed out');
-      _bleService.disconnectCurrentDevice(); // Ensure disconnect on sign out
-      if (mounted) {
-        Navigator.pushReplacementNamed(context, '/login');
-      }
-    } catch (error) {
-      print('Error signing out: $error');
-    }
-  }
-
 
   @override
   Widget build(BuildContext context) {
