@@ -41,7 +41,9 @@ class _MyAppState extends State<MyApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Smart Cane Prototype App', // Updated title
-      theme: AppTheme.lightTheme, // Apply our custom theme
+      theme: AppTheme.lightTheme, // Set the light theme
+      darkTheme: AppTheme.darkTheme, // Set the dark theme
+      themeMode: ThemeMode.system, // Use the system theme preference
       home: FutureBuilder<bool>(
         future: _isSignedIn(),
         builder: (context, snapshot) {
