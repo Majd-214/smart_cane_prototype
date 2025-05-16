@@ -14,11 +14,11 @@
       },
       "oauth_client": [
         {
-          "client_id": "563379077533-mjlppkquc55m9qb4thnh8muk7qk0iuj6.apps.googleusercontent.com",
+          "client_id": "563379077533-1cimhsrd2fg223v2aobgs5uqsntnucf8.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
             "package_name": "com.sept.learning_factory.smart_cane_prototype",
-            "certificate_hash": "b573f4b90d2157d297903d202b8bfb3511afb99f"
+            "certificate_hash": "e5df00bb4f1f724d2ff4be113074097d2aad2f1b"
           }
         },
         {

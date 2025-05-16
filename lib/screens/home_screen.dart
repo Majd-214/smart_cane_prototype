@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
+// Keep AppTheme import if you need specific colors like warningColor that
+// are not standard in ColorScheme.
 import 'package:smart_cane_prototype/utils/app_theme.dart';
-import 'package:google_sign_in/google_sign_in.dart';
+import 'package:google_sign_in/google_sign_in.dart'; // Keep for sign out
 import 'package:smart_cane_prototype/services/ble_service.dart';
 import 'dart:async';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+// Removed the import for fall_detection_overlay.dart as we are not there yet.
+// import 'package:smart_cane_prototype/widgets/fall_detection_overlay.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -21,12 +24,16 @@ class _HomeScreenState extends State<HomeScreen> {
   int? _currentBatteryLevel;
   bool _currentFallDetected = false; // State variable for UI display
   BluetoothDevice? _currentConnectedDevice;
+  bool _calibrationSuccess = false; // State to show calibration success feedback
+  Timer? _calibrationTimer; // Timer for the calibration feedback duration
 
   StreamSubscription<BleConnectionState>? _connectionStateSubscription;
   StreamSubscription<List<ScanResult>>? _scanResultsSubscription;
   StreamSubscription<int?>? _batteryLevelSubscription;
-  StreamSubscription<bool>? _fallDetectedSubscription;
+  StreamSubscription<bool?>? _fallDetectedSubscription;
   StreamSubscription<BluetoothDevice?>? _connectedDeviceSubscription;
+
+  // Removed OverlayEntry variable and overlay-related methods/logic
 
 
   @override
@@ -38,7 +45,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
     _connectionStateSubscription = _bleService.connectionStateStream.listen((state) {
       print("HomeScreen received connection state: $state");
-      print("showStatusCards will be: ${state == BleConnectionState.connected || state == BleConnectionState.connecting || state == BleConnectionState.disconnecting || state == BleConnectionState.scanning || state == BleConnectionState.scanStopped || state == BleConnectionState.bluetoothOff || state == BleConnectionState.noPermissions || state == BleConnectionState.unknown}");
       setState(() {
         _currentConnectionState = state;
 
@@ -53,8 +59,9 @@ class _HomeScreenState extends State<HomeScreen> {
             state == BleConnectionState.unknown ||
             state == BleConnectionState.scanStopped) {
           _currentBatteryLevel = null;
-          _currentFallDetected = false;
-          print("Battery and Fall status reset.");
+          // Keep _currentFallDetected state for UI until reset button is pressed
+          // _currentFallDetected = false; // Do not reset UI state automatically here
+          print("Battery status reset.");
         }
       });
     });
@@ -78,15 +85,30 @@ class _HomeScreenState extends State<HomeScreen> {
       });
     });
 
-    _fallDetectedSubscription = _bleService.fallDetectedStream.listen((detected) {
+    // Listen for fall detection events and update the UI state
+    _fallDetectedSubscription = _bleService.fallDetectedStream.listen((bool? detected) {
       print("HomeScreen received fall detected: $detected");
-      if (detected) {
+      // Update the UI state variable when a fall is detected
+      if (detected == true) {
         setState(() {
-          _currentFallDetected = detected;
+          _currentFallDetected = true;
         });
-        print("Fall detected in HomeScreen! Time to show the overlay.");
+        print("Fall detected in HomeScreen! UI state updated.");
+        // Note: The overlay logic will be added later, triggered by this state change.
+      } else if (detected == false && _currentFallDetected) {
+        // If cane sends 'false' notification while fall is active in UI state, reset the UI state.
+        setState(() {
+          _currentFallDetected = false;
+        });
+        _bleService.resetFallDetectedState(); // Reset service state as well if cane signals reset
+      } else if (detected == null) {
+        print("HomeScreen received null fall detected state from stream.");
+        setState(() {
+          _currentFallDetected = false; // Assume no fall on null
+        });
       }
     });
+
 
     _connectedDeviceSubscription = _bleService.connectedDeviceStream.listen((device) {
       print("HomeScreen received connected device: ${device?.platformName}");
@@ -96,6 +118,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
 
+    // Start a scan when the screen loads if not connected
     Future.delayed(const Duration(milliseconds: 100), () {
       if (_bleService.getCurrentConnectionState() == BleConnectionState.disconnected) {
         print("HomeScreen: Starting initial scan.");
@@ -116,11 +139,17 @@ class _HomeScreenState extends State<HomeScreen> {
     _fallDetectedSubscription?.cancel();
     _connectedDeviceSubscription?.cancel();
 
-    _bleService.disconnectCurrentDevice();
+    _calibrationTimer?.cancel(); // Cancel the calibration timer
+
+    // Removed overlay removal logic
+
+    _bleService.disconnectCurrentDevice(); // Disconnect from BLE on screen dispose
 
     super.dispose();
     print("HomeScreen dispose finished.");
   }
+
+  // Removed _showFallDetectionOverlay and _hideFallDetectionOverlay methods
 
 
   // --- Button Actions ---
@@ -142,26 +171,39 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_currentConnectionState == BleConnectionState.connected) {
       print("HomeScreen: Tapped Calibrate button.");
       _bleService.sendCalibrationCommand();
+
+      // --- Add Calibration Success Feedback Logic ---
+      setState(() {
+        _calibrationSuccess = true; // Show success feedback
+      });
+      _calibrationTimer?.cancel(); // Cancel any existing timer
+      _calibrationTimer = Timer(const Duration(seconds: 5), () {
+        setState(() {
+          _calibrationSuccess = false; // Hide success feedback after 5 seconds
+        });
+      });
+      // --- End of Calibration Success Feedback Logic ---
+
     } else {
       print("HomeScreen: Cannot calibrate: Not connected to the cane.");
     }
   }
 
   void _handleFallDetectedReset() {
-    print("HomeScreen: Fall Detected Reset requested.");
+    print("HomeScreen: Fall Detected Reset requested from UI.");
     setState(() {
-      _currentFallDetected = false;
+      _currentFallDetected = false; // Reset UI state immediately
     });
-    _bleService.resetFallDetectedState();
+    _bleService.resetFallDetectedState(); // Notify the service/ESP32 to clear its state
   }
 
 
   Future<void> _handleSignOut() async {
     try {
       print("HomeScreen: Attempting sign out.");
-      await GoogleSignIn().signOut();
+      await GoogleSignIn().signOut(); // Use the actual Google Sign-In sign out
       print('Signed out');
-      _bleService.disconnectCurrentDevice();
+      _bleService.disconnectCurrentDevice(); // Ensure disconnect on sign out
       if (mounted) {
         Navigator.pushReplacementNamed(context, '/login');
       }
@@ -173,7 +215,28 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final textTheme = Theme.of(context).textTheme;
+    // Access the current theme based on device settings
+    final theme = Theme.of(context);
+    final textTheme = theme.textTheme;
+    final colorScheme = theme.colorScheme;
+
+    // Determine colors based on the current theme's color scheme and text theme
+    final Color primaryThemedColor = colorScheme.primary;
+    final Color accentThemedColor = colorScheme.secondary;
+    final Color errorThemedColor = colorScheme.error;
+    // Warning color might not be in colorScheme, use AppTheme directly if needed
+    final Color warningThemedColor = AppTheme.warningColor; // Using static constant for this specific color
+    final Color backgroundThemedColor = theme.scaffoldBackgroundColor;
+    final Color cardThemedColor = theme.cardColor;
+    // Get default text colors from the theme's text theme and on-colors from colorScheme
+    // Use onBackground for text directly on the Scaffold background
+    final Color primaryTextThemedColor = colorScheme.onBackground;
+    final Color secondaryTextThemedColor = colorScheme.onBackground.withOpacity(0.7);
+    // Explicitly using white for text on solid colors including warning/yellow
+    const Color textOnSolidColor = Colors.white;
+    // Text color on surface/card background uses onSurface
+    final Color onSurfaceThemedColor = colorScheme.onSurface;
+
 
     bool showStatusCards = _currentConnectionState == BleConnectionState.connected ||
         _currentConnectionState == BleConnectionState.connecting ||
@@ -186,12 +249,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
 
     // Determine which content to show in the main flexible area
-    Widget mainBodyContent; // This variable holds the WIDGET that goes inside the Expanded AnimatedSwitcher
+    Widget mainBodyContent;
 
     if (_currentConnectionState == BleConnectionState.connected && _currentConnectedDevice != null) {
       // Connected Device Info CONTENT
       mainBodyContent = Column(
-        key: const ValueKey('connected_info'), // Add unique key for AnimatedSwitcher
+        key: const ValueKey('connected_info'),
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const SizedBox(height: 24),
@@ -199,11 +262,13 @@ class _HomeScreenState extends State<HomeScreen> {
             'Device Information',
             style: textTheme.headlineSmall?.copyWith(
               fontWeight: FontWeight.bold,
+              color: primaryTextThemedColor, // Use themed primary text color (on background)
             ),
           ),
           const SizedBox(height: 16),
           Card(
             elevation: 2,
+            color: cardThemedColor, // Use themed card color
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(8),
             ),
@@ -212,9 +277,13 @@ class _HomeScreenState extends State<HomeScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Device Name: ${_currentConnectedDevice!.platformName}', style: textTheme.bodyMedium),
+                  Text('Device Name: ${_currentConnectedDevice!.platformName}',
+                      style: textTheme.bodyMedium?.copyWith(color: onSurfaceThemedColor) // Text on card uses onSurface
+                  ),
                   const SizedBox(height: 8),
-                  Text('Device ID: ${_currentConnectedDevice!.id.toString()}', style: textTheme.bodyMedium),
+                  Text('Device ID: ${_currentConnectedDevice!.id.toString()}',
+                      style: textTheme.bodyMedium?.copyWith(color: onSurfaceThemedColor) // Text on card uses onSurface
+                  ),
                 ],
               ),
             ),
@@ -224,26 +293,34 @@ class _HomeScreenState extends State<HomeScreen> {
 
     } else if ((_currentConnectionState == BleConnectionState.scanning || _currentConnectionState == BleConnectionState.scanStopped) && _scanResults.isNotEmpty) {
       // Scan Results List CONTENT
-      mainBodyContent = Column( // This column is the child of the Expanded AnimatedSwitcher
-        key: const ValueKey('scan_results'), // Add unique key for AnimatedSwitcher
+      mainBodyContent = Column(
+        key: const ValueKey('scan_results'),
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             'Discovered Devices:',
             style: textTheme.headlineSmall?.copyWith(
               fontWeight: FontWeight.bold,
+              color: primaryTextThemedColor, // Use themed text color (on background)
             ),
           ),
           const SizedBox(height: 8),
-          Expanded( // This Expanded is correctly inside the content column
+          Expanded(
             child: ListView.builder(
               itemCount: _scanResults.length,
               itemBuilder: (context, index) {
                 final result = _scanResults[index];
+                // Use themed colors for ListTile text (on background)
                 return ListTile(
-                  title: Text(result.device.platformName, style: textTheme.bodyMedium),
-                  subtitle: Text(result.device.id.toString(), style: textTheme.bodySmall),
-                  trailing: Text('${result.rssi} dBm', style: textTheme.bodySmall),
+                  title: Text(result.device.platformName,
+                      style: textTheme.bodyMedium?.copyWith(color: primaryTextThemedColor)
+                  ),
+                  subtitle: Text(result.device.id.toString(),
+                      style: textTheme.bodySmall?.copyWith(color: secondaryTextThemedColor)
+                  ),
+                  trailing: Text('${result.rssi} dBm',
+                      style: textTheme.bodySmall?.copyWith(color: secondaryTextThemedColor)
+                  ),
                   onTap: () {
                     print("HomeScreen: Tapped on device: ${result.device.platformName}");
                     _bleService.stopScan();
@@ -257,41 +334,42 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     } else {
       // Placeholder or guidance text when not connected and no scan results
-      // Also show placeholder during connection/disconnection phases
       mainBodyContent = Center(
         key: ValueKey('placeholder_${_currentConnectionState}'),
-        child: Text(
-          _currentConnectionState == BleConnectionState.connecting ? 'Connecting...'
-              : (_currentConnectionState == BleConnectionState.disconnecting ? 'Disconnecting...'
-              : (_currentConnectionState == BleConnectionState.scanning ? 'Searching for devices...'
-              : (_currentConnectionState == BleConnectionState.scanStopped ? (_scanResults.isEmpty ? 'Scan finished. No devices found.' : 'Tap device to connect.') // Clarify scan stopped text
-              : (_currentConnectionState == BleConnectionState.bluetoothOff ? 'Bluetooth is turned off.'
-              : (_currentConnectionState == BleConnectionState.noPermissions ? 'Bluetooth permissions needed.'
-              : (_currentConnectionState == BleConnectionState.unknown ? 'Bluetooth status unknown.'
-              : 'Tap "Scan for Cane" to find your device.'
-          )))))),
-          style: textTheme.bodyMedium?.copyWith(
-            color: AppTheme.textColorSecondary,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24.0),
+          child: Text(
+            _currentConnectionState == BleConnectionState.connecting ? 'Connecting...'
+                : (_currentConnectionState == BleConnectionState.disconnecting ? 'Disconnecting...'
+                : (_currentConnectionState == BleConnectionState.scanning ? 'Searching for devices...'
+                : (_currentConnectionState == BleConnectionState.scanStopped ? (_scanResults.isEmpty ? 'Scan finished. No devices found.' : 'Tap device to connect.')
+                : (_currentConnectionState == BleConnectionState.bluetoothOff ? 'Bluetooth is turned off.'
+                : (_currentConnectionState == BleConnectionState.noPermissions ? 'Permissions Needed.'
+                : (_currentConnectionState == BleConnectionState.unknown ? 'Status Unknown.'
+                : 'Tap "Scan for Cane" to find your device.'
+            )))))),
+            style: textTheme.bodyMedium?.copyWith(
+              color: secondaryTextThemedColor, // Use themed secondary text color (on background)
+            ),
+            textAlign: TextAlign.center,
           ),
-          textAlign: TextAlign.center,
         ),
       );
     }
 
 
     return Scaffold(
+      // Use themed background color
+      backgroundColor: backgroundThemedColor,
       appBar: AppBar(
-        title: Text(
-          'Smart Cane Dashboard',
-          style: textTheme.titleLarge?.copyWith(
-              color: AppTheme.darkTextColorPrimary
-          ),
-        ),
+        // AppBar colors and title text style are handled by AppBarTheme in AppTheme
+        title: const Text('Smart Cane Dashboard'), // Text widget itself doesn't need style here if AppBarTheme is set
         actions: [
           IconButton(
             icon: const Icon(Icons.logout),
             tooltip: 'Sign Out',
             onPressed: _handleSignOut,
+            // Icon color handled by AppBarTheme in AppTheme
           ),
         ],
       ),
@@ -303,7 +381,8 @@ class _HomeScreenState extends State<HomeScreen> {
             Text(
               'Status',
               style: textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.bold,
+                  fontWeight: FontWeight.bold,
+                  color: primaryTextThemedColor // Use themed primary text color (on background)
               ),
             ),
             const SizedBox(height: 16),
@@ -323,72 +402,75 @@ class _HomeScreenState extends State<HomeScreen> {
                       final state = snapshot.data ?? BleConnectionState.disconnected;
                       String statusText;
                       IconData statusIcon;
-                      Color statusColor;
+                      Color cardBackgroundColor; // Background color of this card
+                      Color cardElementColor; // Text/Icon color on this card's background
                       Widget? trailingWidget;
 
                       switch (state) {
                         case BleConnectionState.connected:
                           statusText = "Connected";
                           statusIcon = Icons.bluetooth_connected;
-                          statusColor = AppTheme.accentColor;
-                          trailingWidget = Icon(Icons.check_circle, color: AppTheme.accentColor);
+                          cardBackgroundColor = accentThemedColor; // Connected card is accent colored
+                          cardElementColor = textOnSolidColor; // Text color on accent background (white)
+                          trailingWidget = Icon(Icons.check_circle, color: cardElementColor); // Icon color on accent background
                           break;
                         case BleConnectionState.connecting:
                           statusText = "Connecting...";
                           statusIcon = Icons.bluetooth_searching;
-                          statusColor = AppTheme.warningColor;
-                          trailingWidget = const SizedBox(
-                            height: 20, width: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          );
+                          cardBackgroundColor = warningThemedColor; // Connecting card is warning colored (yellow)
+                          cardElementColor = textOnSolidColor; // Text color on warning background (explicitly white)
+                          trailingWidget = CircularProgressIndicator(strokeWidth: 2, color: cardElementColor); // Progress indicator color
                           break;
                         case BleConnectionState.disconnected:
                           statusText = "Disconnected";
                           statusIcon = Icons.bluetooth_disabled;
-                          statusColor = AppTheme.textColorSecondary;
+                          cardBackgroundColor = cardThemedColor; // Disconnected card is standard card color
+                          cardElementColor = onSurfaceThemedColor; // Text color on card background (dark/light based on theme)
                           break;
                         case BleConnectionState.disconnecting:
                           statusText = "Disconnecting...";
                           statusIcon = Icons.bluetooth_disabled;
-                          statusColor = AppTheme.warningColor;
-                          trailingWidget = const SizedBox(
-                            height: 20, width: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          );
+                          cardBackgroundColor = warningThemedColor; // Disconnecting card is warning colored (yellow)
+                          cardElementColor = textOnSolidColor; // Text color on warning background (explicitly white)
+                          trailingWidget = CircularProgressIndicator(strokeWidth: 2, color: cardElementColor); // Progress indicator color
                           break;
                         case BleConnectionState.bluetoothOff:
                           statusText = "Bluetooth is Off";
                           statusIcon = Icons.bluetooth_disabled;
-                          statusColor = AppTheme.errorColor;
+                          cardBackgroundColor = errorThemedColor; // Error states are error colored (red)
+                          cardElementColor = textOnSolidColor; // Text color on error background (white)
                           break;
                         case BleConnectionState.noPermissions:
                           statusText = "Permissions Needed";
                           statusIcon = Icons.bluetooth_disabled;
-                          statusColor = AppTheme.errorColor;
+                          cardBackgroundColor = errorThemedColor; // Error states are error colored (red)
+                          cardElementColor = textOnSolidColor; // Text color on error background (white)
                           break;
                         case BleConnectionState.unknown:
                           statusText = "Status Unknown";
                           statusIcon = Icons.bluetooth_disabled;
-                          statusColor = AppTheme.errorColor;
+                          cardBackgroundColor = errorThemedColor; // Error states are error colored (red)
+                          cardElementColor = textOnSolidColor; // Text color on error background (white)
                           break;
                         case BleConnectionState.scanning:
                           statusText = "Scanning...";
                           statusIcon = Icons.bluetooth_searching;
-                          statusColor = AppTheme.warningColor;
-                          trailingWidget = const SizedBox(
-                            height: 20, width: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          );
+                          cardBackgroundColor = warningThemedColor; // Scanning card is warning colored (yellow)
+                          cardElementColor = textOnSolidColor; // Text color on warning background (explicitly white)
+                          trailingWidget = CircularProgressIndicator(strokeWidth: 2, color: cardElementColor); // Progress indicator color
                           break;
                         case BleConnectionState.scanStopped:
                           statusText = "Scan Stopped";
                           statusIcon = Icons.bluetooth_disabled;
-                          statusColor = AppTheme.textColorSecondary;
+                          cardBackgroundColor = cardThemedColor; // Scan stopped card is standard card color
+                          cardElementColor = onSurfaceThemedColor; // Text color on card background (dark/light based on theme)
                           break;
                       }
 
+
                       return Card(
                         elevation: 2,
+                        color: cardBackgroundColor, // Use determined background color
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(8),
                         ),
@@ -396,12 +478,12 @@ class _HomeScreenState extends State<HomeScreen> {
                           padding: const EdgeInsets.all(16.0),
                           child: Row(
                             children: [
-                              Icon(statusIcon, color: statusColor),
+                              Icon(statusIcon, color: cardElementColor), // Icon color matches text color
                               const SizedBox(width: 16),
                               Expanded(
                                 child: Text(
                                   'Connectivity Status: $statusText',
-                                  style: textTheme.bodyMedium,
+                                  style: textTheme.bodyMedium?.copyWith(color: cardElementColor), // Use determined text color
                                 ),
                               ),
                               if (trailingWidget != null) trailingWidget,
@@ -420,26 +502,56 @@ class _HomeScreenState extends State<HomeScreen> {
                     initialData: _currentBatteryLevel,
                     builder: (context, snapshot) {
                       final batteryLevel = snapshot.data;
-                      IconData batteryIcon;
-                      Color batteryColor;
+                      IconData batteryIcon; // Variable to hold the icon data
+                      Color batteryIconColor; // Variable to hold the icon color
                       String batteryText;
+                      Color cardElementColor = onSurfaceThemedColor; // Text color on standard card
 
+                      // --- Logic to determine icon and color ---
                       if (_currentConnectionState != BleConnectionState.connected) {
-                        batteryIcon = Icons.battery_unknown;
-                        batteryColor = AppTheme.textColorSecondary;
+                        batteryIcon = Icons.battery_unknown; // Unknown icon when not connected
+                        batteryIconColor = secondaryTextThemedColor; // Use secondary color when not connected
                         batteryText = 'N/A';
                       } else if (batteryLevel != null) {
-                        batteryIcon = (batteryLevel > 75 ? Icons.battery_full : (batteryLevel > 25 ? Icons.battery_std : Icons.battery_alert));
-                        batteryColor = (batteryLevel > 25 ? AppTheme.accentColor : AppTheme.errorColor);
+                        // Determine icon based on battery level when connected
+                        if (batteryLevel > 95) {
+                          batteryIcon = Icons.battery_full;
+                        } else if (batteryLevel > 90) {
+                          batteryIcon = Icons.battery_6_bar;
+                        } else if (batteryLevel > 75) {
+                          batteryIcon = Icons.battery_5_bar;
+                        } else if (batteryLevel > 60) {
+                          batteryIcon = Icons.battery_4_bar;
+                        } else if (batteryLevel > 45) {
+                          batteryIcon = Icons.battery_3_bar;
+                        } else if (batteryLevel > 30) {
+                          batteryIcon = Icons.battery_2_bar;
+                        } else if (batteryLevel > 15) {
+                          batteryIcon = Icons.battery_1_bar;
+                        } else if (batteryLevel > 5) {
+                          batteryIcon = Icons.battery_0_bar;
+                        } else {
+                          batteryIcon = Icons.battery_alert;
+                        }
+
+                        // Determine icon color based on battery level when connected
+                        batteryIconColor = (batteryLevel > 45)
+                            ? accentThemedColor // Use accent color for good battery
+                            : (batteryLevel > 15 ? warningThemedColor
+                            : errorThemedColor); // Use error color for low battery
+
                         batteryText = '$batteryLevel%';
                       } else {
-                        batteryIcon = Icons.battery_unknown;
-                        batteryColor = AppTheme.textColorSecondary;
-                        batteryText = 'Loading...';
+                        batteryIcon = Icons.battery_unknown; // Unknown icon if level is null
+                        batteryIconColor = secondaryTextThemedColor; // Use secondary color if level is null
+                        batteryText = 'Loading...'; // Text if level is null
                       }
+                      // --- End of Logic ---
+
 
                       return Card(
                         elevation: 2,
+                        color: cardThemedColor, // Use themed card color
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(8),
                         ),
@@ -447,11 +559,11 @@ class _HomeScreenState extends State<HomeScreen> {
                           padding: const EdgeInsets.all(16.0),
                           child: Row(
                             children: [
-                              Icon(batteryIcon, color: batteryColor),
+                              Icon(batteryIcon, color: batteryIconColor), // Use determined icon and color
                               const SizedBox(width: 16),
                               Text(
                                 'Battery Level: $batteryText',
-                                style: textTheme.bodyMedium,
+                                style: textTheme.bodyMedium?.copyWith(color: cardElementColor), // Use themed text color on card
                               ),
                             ],
                           ),
@@ -463,32 +575,40 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(height: 16),
 
                   // Fall Detection Status Card with Reset Button
-                  StreamBuilder<bool>(
+                  StreamBuilder<bool?>( // Stream type matches service stream
                     stream: _bleService.fallDetectedStream,
-                    initialData: _currentFallDetected,
+                    initialData: _currentFallDetected, // Initial data is non-nullable bool
                     builder: (context, snapshot) {
-                      final fallDetected = _currentFallDetected;
+                      // Use the internal state for UI display, which is controlled by the stream listener
+                      final fallDetected = _currentFallDetected; // Use the state variable
+
+                      // Text and icon color when fall is detected is explicitly white
+                      // Text and icon color when NOT detected is onSurfaceThemedColor (text color on card background)
+                      final Color cardElementColor = fallDetected ? textOnSolidColor : onSurfaceThemedColor;
+
 
                       return Card(
                         elevation: 2,
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(8),
                         ),
-                        color: fallDetected ? AppTheme.errorColor : null,
+                        color: fallDetected ? errorThemedColor : cardThemedColor, // Use themed error/card color for background
                         child: Padding(
                           padding: const EdgeInsets.all(16.0),
                           child: Row(
                             children: [
                               Icon(
-                                fallDetected ? Icons.warning : Icons.check_circle_outline,
-                                color: fallDetected ? Colors.white : AppTheme.accentColor,
+                                fallDetected ? Icons.warning :
+                                (_currentConnectionState == BleConnectionState.connected ? Icons.check_circle_outline : Icons.sync_problem_outlined),
+                                color: fallDetected || _currentConnectionState != BleConnectionState.connected ? cardElementColor : accentThemedColor, // Apply determined color
                               ),
                               const SizedBox(width: 16),
                               Expanded(
                                 child: Text(
-                                  'Fall Detected: ${fallDetected ? 'Yes' : 'No'}',
+                                  '${fallDetected ? 'Fall Detected!' :
+                                  (_currentConnectionState == BleConnectionState.connected ? 'No Fall Detected' : 'No Device Connected!')}',
                                   style: textTheme.bodyMedium?.copyWith(
-                                    color: fallDetected ? Colors.white : AppTheme.textColorPrimary,
+                                    color: cardElementColor, // Apply determined text color
                                   ),
                                 ),
                               ),
@@ -498,7 +618,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   child: Text(
                                     'Reset',
                                     style: textTheme.labelLarge?.copyWith(
-                                      color: fallDetected ? Colors.white : AppTheme.primaryColor,
+                                      color: cardElementColor, // Apply determined text color (should be white when fallDetected)
                                       fontWeight: FontWeight.bold,
                                     ),
                                   ),
@@ -527,6 +647,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     _currentConnectionState == BleConnectionState.bluetoothOff ||
                     _currentConnectionState == BleConnectionState.noPermissions ||
                     _currentConnectionState == BleConnectionState.unknown ? null : _handleConnectDisconnect,
+                style: ElevatedButton.styleFrom(
+                  // Ensure foreground color is white on colored buttons
+                  foregroundColor: textOnSolidColor, // Explicitly use white for text on this primary colored button
+                ),
                 child: Text(
                   _currentConnectionState == BleConnectionState.connected ? 'Disconnect'
                       : (_currentConnectionState == BleConnectionState.connecting ? 'Connecting...'
@@ -542,17 +666,86 @@ class _HomeScreenState extends State<HomeScreen> {
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: _currentConnectionState == BleConnectionState.connected ? _handleCalibrate : null,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _currentConnectionState == BleConnectionState.connected ? AppTheme.primaryColor : Colors.grey,
+                onPressed: _currentConnectionState == BleConnectionState.connected && !_calibrationSuccess // Disable button while showing success
+                    ? _handleCalibrate
+                    : null,
+                style: ButtonStyle( // Use ButtonStyle for MaterialStateProperty
+                  // --- More Robust Background Color Logic ---
+                  backgroundColor: MaterialStateProperty.resolveWith<Color?>((states) {
+                    if (_calibrationSuccess) {
+                      return accentThemedColor; // Green when successful
+                    }
+                    if (states.contains(MaterialState.disabled)) {
+                      return theme.disabledColor; // Theme's disabled color
+                    }
+                    // Use primary color when connected and not successful/disabled
+                    return primaryThemedColor;
+                  }),
+                  // --- More Robust Foreground Color (Text/Icon) Logic ---
+                  foregroundColor: MaterialStateProperty.resolveWith<Color?>((states) {
+                    if (_calibrationSuccess || _currentConnectionState == BleConnectionState.connected) {
+                      // White text/icon when showing success (green background)
+                      // or when connected (blue background)
+                      return textOnSolidColor;
+                    }
+                    // Dark text when disabled (on disabled color background)
+                    if (states.contains(MaterialState.disabled)) {
+                      return theme.colorScheme.onSurface.withOpacity(0.38);
+                    }
+                    // Default text color (shouldn't be reached with the above logic but good practice)
+                    return theme.colorScheme.onSurface;
+                  }),
+                  padding: MaterialStateProperty.all(const EdgeInsets.symmetric(horizontal: 24, vertical: 12)),
+                  shape: MaterialStateProperty.all(RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  )),
+                  // Text style is often inherited, but can be set here if needed
+                  // textStyle: MaterialStateProperty.all(textTheme.labelLarge),
                 ),
-                child: const Text('Calibrate Cane'),
+                // --- Refined AnimatedSwitcher with Scale Transition ---
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 300), // Animation duration
+                  transitionBuilder: (Widget child, Animation<double> animation) {
+                    // Scale Transition
+                    return ScaleTransition(
+                      scale: animation, // Scale the child widget
+                      child: child,
+                    );
+                    // Or a simple Fade Transition
+                    // return FadeTransition(
+                    //   opacity: animation,
+                    //   child: child,
+                    // );
+                  },
+                  child: _calibrationSuccess // Show different content based on success state
+                      ? Row( // Row for checkmark and text
+                    key: const ValueKey('calibration_success'), // Unique key for AnimatedSwitcher
+                    mainAxisSize: MainAxisSize.min, // Keep row size minimal
+                    mainAxisAlignment: MainAxisAlignment.center, // Center content in the button
+                    children: [
+                      Icon(Icons.check_circle_outline, color: textOnSolidColor), // White checkmark icon
+                      const SizedBox(width: 8), // Spacing
+                      Text(
+                        'Calibration Successful',
+                        style: textTheme.labelLarge?.copyWith(color: textOnSolidColor), // White text
+                      ),
+                    ],
+                  )
+                      : Text( // Standard button text
+                      key: const ValueKey('calibrate_button_text'), // Unique key for AnimatedSwitcher
+                      'Calibrate Cane',
+                      style: textTheme.labelLarge?.copyWith( // Apply theme text style
+                        color: textOnSolidColor, // Text color is white on colored button
+                      )
+                  ),
+                ),
+                // --- End of AnimatedSwitcher ---
               ),
             ),
+
             const SizedBox(height: 24),
 
             // --- Main Body Section (Animated Switcher) ---
-            // Wrap the AnimatedSwitcher in Expanded to give it flexible space
             Expanded(
               child: AnimatedSwitcher(
                 duration: const Duration(milliseconds: 300),
@@ -566,24 +759,21 @@ class _HomeScreenState extends State<HomeScreen> {
                         begin: const Offset(0.0, 0.05),
                         end: Offset.zero,
                       ).animate(animation),
-                      // The widget is the content we want to animate
                       child: widget,
                     ),
                   );
                 },
-                child: KeyedSubtree( // Always wrap the child in KeyedSubtree for AnimatedSwitcher
-                  // Use a unique key based on the content type or state combination
+                child: KeyedSubtree(
                   key: ValueKey<String>(
                       _currentConnectionState == BleConnectionState.connected ? 'connected'
                           : (_currentConnectionState == BleConnectionState.scanning || _currentConnectionState == BleConnectionState.scanStopped ? 'scan_results'
                           : 'placeholder')
                   ),
-                  child: mainBodyContent, // The content widget determined by the state logic above
+                  child: mainBodyContent,
                 ),
               ),
             ),
 
-            // Removed the Spacer()
           ],
         ),
       ),
