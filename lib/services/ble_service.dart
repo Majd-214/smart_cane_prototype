@@ -437,8 +437,8 @@ class BleService {
     connectToDevice(device);
   }
 
-  void disconnectCurrentDevice() {
-    disconnectFromDevice();
+  bool disconnectCurrentDevice() {
+    return disconnectFromDevice() != null;
   }
 
   void resetFallDetectedState() {

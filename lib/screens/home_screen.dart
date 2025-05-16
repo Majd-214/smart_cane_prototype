@@ -1,12 +1,10 @@
 import 'package:flutter/material.dart';
-// Keep AppTheme import if you need specific colors like warningColor that
-// are not standard in ColorScheme.
 import 'package:smart_cane_prototype/utils/app_theme.dart';
-import 'package:google_sign_in/google_sign_in.dart'; // Keep for sign out
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:smart_cane_prototype/services/ble_service.dart';
 import 'dart:async';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:smart_cane_prototype/widgets/fall_detection_overlay.dart';
+import 'package:smart_cane_prototype/widgets/fall_detection_overlay.dart'; // Import overlay
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -21,272 +19,283 @@ class _HomeScreenState extends State<HomeScreen> {
   BleConnectionState _currentConnectionState = BleConnectionState.disconnected;
   List<ScanResult> _scanResults = [];
   int? _currentBatteryLevel;
-  bool _currentFallDetected = false; // State variable for UI display
+  bool _currentFallDetectedUiState = false;
   BluetoothDevice? _currentConnectedDevice;
-  bool _calibrationSuccess = false; // State to show calibration success feedback
-  Timer? _calibrationTimer; // Timer for the calibration feedback duration
-  bool _isFallOverlayVisible = false; // Add this line
+  bool _calibrationSuccess = false;
+  Timer? _calibrationTimer;
 
+  // Ensure StreamSubscription types are specific if possible, or use `StreamSubscription<dynamic>`
   StreamSubscription<BleConnectionState>? _connectionStateSubscription;
   StreamSubscription<List<ScanResult>>? _scanResultsSubscription;
   StreamSubscription<int?>? _batteryLevelSubscription;
-  StreamSubscription<bool?>? _fallDetectedSubscription;
+  StreamSubscription<bool>? _fallDetectedSubscription;
   StreamSubscription<BluetoothDevice?>? _connectedDeviceSubscription;
 
-  // Removed OverlayEntry variable and overlay-related methods/logic
-
+  bool _isFallOverlayVisible = false;
 
   @override
   void initState() {
     super.initState();
-    print("HomeScreen initState");
+    print("HomeScreen: initState");
 
-    _bleService.initialize();
-
+    // Subscribe to streams FIRST
     _connectionStateSubscription = _bleService.connectionStateStream.listen((state) {
-      print("HomeScreen received connection state: $state");
+      if (!mounted) return;
+      print("HomeScreen: Received connection state: $state");
       setState(() {
         _currentConnectionState = state;
-
         if (state != BleConnectionState.scanning && state != BleConnectionState.scanStopped && _scanResults.isNotEmpty) {
           _scanResults = [];
-          print("Scan results cleared.");
+          print("HomeScreen: Scan results cleared as state is $state");
         }
-
         if (state == BleConnectionState.disconnected ||
             state == BleConnectionState.bluetoothOff ||
             state == BleConnectionState.noPermissions ||
             state == BleConnectionState.unknown ||
             state == BleConnectionState.scanStopped) {
           _currentBatteryLevel = null;
-          // Keep _currentFallDetected state for UI until reset button is pressed
-          // _currentFallDetected = false; // Do not reset UI state automatically here
-          print("Battery status reset.");
+          if (state == BleConnectionState.noPermissions){
+            print("HomeScreen: No BLE permissions. UI should reflect this.");
+          }
         }
       });
-    });
+    }, onError: (e, s) => print("HomeScreen: Error in connectionStateStream: $e\n$s"));
 
     _scanResultsSubscription = _bleService.scanResultsStream.listen((results) {
-      setState(() {
-        if (_currentConnectionState == BleConnectionState.scanning || _currentConnectionState == BleConnectionState.scanStopped) {
+      if (!mounted) return;
+      if (_currentConnectionState == BleConnectionState.scanning || _currentConnectionState == BleConnectionState.scanStopped) {
+        setState(() {
           _scanResults = results.where((result) => result.device.platformName.isNotEmpty).toList();
-          print("Scan results updated: ${_scanResults.length} non-empty names.");
-        } else {
-          _scanResults = [];
-          print("Scan results cleared because state is not scanning/scanStopped.");
-        }
-      });
-    });
+        });
+      } else if (_scanResults.isNotEmpty) {
+        setState(() => _scanResults = []);
+        print("HomeScreen: Scan results cleared as state is $_currentConnectionState");
+      }
+    }, onError: (e, s) => print("HomeScreen: Error in scanResultsStream: $e\n$s"));
 
     _batteryLevelSubscription = _bleService.batteryLevelStream.listen((level) {
-      print("HomeScreen received battery level: $level");
-      setState(() {
-        _currentBatteryLevel = level;
-      });
-    });
+      if (!mounted) return;
+      setState(() => _currentBatteryLevel = level);
+    }, onError: (e, s) => print("HomeScreen: Error in batteryLevelStream: $e\n$s"));
 
-    _fallDetectedSubscription = _bleService.fallDetectedStream.listen((bool? detected) {
-      print("HomeScreen received fall detected from stream: $detected, current UI state: $_currentFallDetected, overlay visible: $_isFallOverlayVisible");
-      if (detected == true && !_isFallOverlayVisible) {
-        // Only show overlay if a fall is truly detected AND the overlay isn't already up
-        setState(() {
-          _currentFallDetected = true; // Ensure UI state is consistent
-        });
-        _showFallDetectionOverlay();
-        print("Fall detected in HomeScreen! Triggering overlay.");
-      } else if (detected == false && _currentFallDetected) {
-        // This case handles if the BLE service sends a 'false' (e.g. cane reset)
-        // while the app thinks a fall is active.
-        print("Fall reset by BLE service or external means.");
-        _dismissFallDetectionOverlay(); // Ensure overlay is dismissed
-        setState(() {
-          _currentFallDetected = false;
-        });
-        // No need to call _bleService.resetFallDetectedState() here if the service itself initiated the 'false'
-      } else if (detected == null && _currentFallDetected) {
-        // If stream sends null but UI still thinks fall is active
-        print("Fall state became null from stream, dismissing overlay if active.");
-        _dismissFallDetectionOverlay();
-        setState(() {
-          _currentFallDetected = false; // Assume no fall on null
-        });
+    _fallDetectedSubscription = _bleService.fallDetectedStream.listen((detected) {
+      if (!mounted) return;
+      print("HomeScreen: Fall detected stream update: $detected. Overlay visible: $_isFallOverlayVisible. UI Fall State: $_currentFallDetectedUiState");
+      if (detected == true) {
+        if (!_isFallOverlayVisible) {
+          setState(() => _currentFallDetectedUiState = true);
+          _showFallDetectionOverlay();
+        }
+      } else {
+        if (_currentFallDetectedUiState || _isFallOverlayVisible) {
+          _dismissFallDetectionOverlay();
+          setState(() => _currentFallDetectedUiState = false);
+        }
       }
-      // If detected == false and _currentFallDetected is already false, do nothing.
-      // If detected == true and _isFallOverlayVisible is true, do nothing.
-    });
+    }, onError: (e, s) => print("HomeScreen: Error in fallDetectedStream: $e\n$s"));
 
     _connectedDeviceSubscription = _bleService.connectedDeviceStream.listen((device) {
-      print("HomeScreen received connected device: ${device?.platformName}");
-      setState(() {
-        _currentConnectedDevice = device;
-      });
-    });
+      if (!mounted) return;
+      setState(() => _currentConnectedDevice = device);
+    }, onError: (e, s) => print("HomeScreen: Error in connectedDeviceStream: $e\n$s"));
 
-
-    // Start a scan when the screen loads if not connected
-    Future.delayed(const Duration(milliseconds: 100), () {
-      if (_bleService.getCurrentConnectionState() == BleConnectionState.disconnected) {
-        print("HomeScreen: Starting initial scan.");
-        _bleService.startBleScan();
-      } else {
-        print("HomeScreen: Not starting initial scan, state is ${_bleService.getCurrentConnectionState()}.");
-      }
-    });
-    print("HomeScreen initState finished.");
+    _initializeBleAndMaybeScan();
+    print("HomeScreen: initState finished synchronous part.");
   }
 
-  // Inside _HomeScreenState class
+  Future<void> _initializeBleAndMaybeScan() async {
+    print("HomeScreen: Initializing BleService...");
+    // The reverted BleService.initialize() is Future<void> and calls its own _requestPermissions
+    await _bleService.initialize();
+    if (!mounted) return;
+
+    print("HomeScreen: BleService initialize call completed.");
+
+    // Give a moment for BleService's internal state (especially after permission requests) to settle
+    await Future.delayed(const Duration(milliseconds: 500));
+    if (!mounted) return;
+
+    BleConnectionState initialStateAfterInit = _bleService.getCurrentConnectionState();
+    print("HomeScreen: State after BleService init and delay: $initialStateAfterInit");
+
+    // Sync HomeScreen's state with BleService's state if it changed during init
+    if (_currentConnectionState != initialStateAfterInit) {
+      setState(() { _currentConnectionState = initialStateAfterInit; });
+    }
+
+    if (initialStateAfterInit == BleConnectionState.disconnected) {
+      print("HomeScreen: State is disconnected after init. Attempting initial scan.");
+      // The reverted BleService's startScan() should internally handle permission checks again if needed.
+      _bleService.startBleScan();
+    } else if (initialStateAfterInit == BleConnectionState.noPermissions) {
+      print("HomeScreen: BleService reports no permissions after init. Scan not started. UI should guide user.");
+    } else {
+      print("HomeScreen: Not starting initial scan. Current state after init: $initialStateAfterInit");
+    }
+  }
 
   void _showFallDetectionOverlay() {
-    if (!mounted || _isFallOverlayVisible) return; // Prevent showing if not mounted or already visible
-
+    if (!mounted || _isFallOverlayVisible) return;
     print("HomeScreen: Attempting to show fall detection overlay.");
-    setState(() {
-      _isFallOverlayVisible = true;
-    });
+    setState(() => _isFallOverlayVisible = true);
 
     Navigator.of(context).push(
       PageRouteBuilder(
-        opaque: false, // Makes the route see-through to the one below if needed (though our overlay is opaque)
-        pageBuilder: (BuildContext context, _, __) {
-          return FallDetectionOverlay(
+          opaque: false, // Ensure overlay can be see-through if designed that way
+          pageBuilder: (context, animation, secondaryAnimation) => FallDetectionOverlay(
+            // Assuming FallDetectionOverlay uses its own default or you provide one
+            initialCountdownSeconds: 30,
             onImOk: () {
-              print("HomeScreen: 'I'm OK' pressed from overlay.");
-              _dismissFallDetectionOverlay();
-              _handleFallDetectedReset(); // Use existing reset logic
+              print("HomeScreen: 'I'm OK' pressed.");
+              if(Navigator.canPop(context)) Navigator.of(context).pop();
+              _handleFallDetectedResetLogic();
             },
             onCallEmergency: () {
-              print("HomeScreen: 'Call Emergency' pressed from overlay.");
-              _dismissFallDetectionOverlay(); // Dismiss before calling
-              // We'll implement the actual call in a later step
-              // For now, let's just log it and reset the fall state
-              print("TODO: Implement emergency call logic here.");
-              _bleService.makePhoneCall('+19058028483'); // Temporary direct call for testing
-              _handleFallDetectedReset(); // Reset fall state after initiating call
+              print("HomeScreen: 'Call Emergency' pressed.");
+              if(Navigator.canPop(context)) Navigator.of(context).pop();
+              _bleService.makePhoneCall('+19058028483'); // Test number
+              _handleFallDetectedResetLogic();
             },
-            // countdownSeconds will be used when we make the overlay stateful
-          );
-        },
+          ),
+          transitionsBuilder: (context, animation, secondaryAnimation, child) {
+            // Example: Fade transition for the overlay
+            return FadeTransition(opacity: animation, child: child);
+          },
+          transitionDuration: const Duration(milliseconds: 300) // Shorter transition
       ),
     ).then((_) {
-      // This `then` callback executes when the pushed route is popped.
-      // Useful for cleanup if the overlay is dismissed by other means (e.g. back button)
       print("HomeScreen: Fall detection overlay was popped.");
-      if (_isFallOverlayVisible) { // Check if it was dismissed by our methods already
-        setState(() {
-          _isFallOverlayVisible = false;
-          // If the overlay was dismissed by back button, ensure _currentFallDetected is also reset
-          if (_currentFallDetected) {
-            _handleFallDetectedReset();
-          }
-        });
+      if (mounted) {
+        // Ensure _isFallOverlayVisible is reset even if popped via back button
+        if (_isFallOverlayVisible) { // Only if it was truly visible by our flag
+          setState(() => _isFallOverlayVisible = false);
+        }
+        // If overlay was dismissed by other means (e.g. back button) and fall was active
+        if (_currentFallDetectedUiState) {
+          print("HomeScreen: Overlay popped via back button while fall was active. Resetting fall state.");
+          _handleFallDetectedResetLogic();
+        }
       }
     });
   }
 
   void _dismissFallDetectionOverlay() {
-    if (_isFallOverlayVisible && mounted) {
-      print("HomeScreen: Dismissing fall detection overlay.");
-      Navigator.of(context).pop(); // Pop the overlay route
-      // The state update (_isFallOverlayVisible = false) will be handled in the .then() of push
-      // or by direct calls if pop is initiated elsewhere.
-      // To be safe, we can also set it here if pop is called directly
-      // without going through the overlay's buttons.
-      // However, the `.then()` above is generally the more robust place.
-      if (mounted) { // Ensure widget is still mounted before calling setState
-        setState(() {
-          _isFallOverlayVisible = false;
-          // No need to reset _currentFallDetected here as it's handled by onImOk or onCallEmergency
+    if (_isFallOverlayVisible && mounted && Navigator.canPop(context)) {
+      print("HomeScreen: Dismissing fall detection overlay programmatically.");
+      Navigator.of(context).pop();
+      // _isFallOverlayVisible is set to false in the .then() of push()
+    }
+  }
+
+  void _handleFallDetectedResetLogic() {
+    print("HomeScreen: Executing fall detected reset logic.");
+    if (mounted) {
+      // Check if overlay is still somehow visible and try to dismiss it again, just in case
+      // This can happen if reset is called from multiple places or due to race conditions
+      if (_isFallOverlayVisible && Navigator.canPop(context)) {
+        // Don't pop here if this method is called from the overlay's own buttons' pop action
+        // The primary role here is to reset the *state*.
+      }
+      setState(() {
+        _currentFallDetectedUiState = false;
+        // _isFallOverlayVisible = false; // This should be set when the overlay is actually popped
+      });
+    }
+    _bleService.resetFallDetectedState();
+  }
+
+
+  void _handleConnectDisconnect() {
+    // Get the absolute current state from the service before deciding action
+    BleConnectionState currentState = _bleService.getCurrentConnectionState();
+    print("HomeScreen: _handleConnectDisconnect called. Current BLE Service State: $currentState");
+
+    if (currentState == BleConnectionState.connected) {
+      print("HomeScreen: Disconnect button pressed.");
+      _bleService.disconnectCurrentDevice(); // Use public method from reverted service
+    } else if (currentState == BleConnectionState.connecting || currentState == BleConnectionState.disconnecting) {
+      print("HomeScreen: Button pressed while connecting/disconnecting. No action taken.");
+      // Optionally, implement a cancel connection attempt here if desired
+    } else if (currentState == BleConnectionState.scanning) {
+      print("HomeScreen: Stop Scan button pressed.");
+      _bleService.stopScan(); // Use public method from reverted service
+    }
+    else { // Disconnected, scanStopped, noPermissions, bluetoothOff, unknown
+      print("HomeScreen: Scan button pressed. Current state: $currentState");
+      // The startBleScan() in the reverted BleService internally calls _requestPermissions if needed.
+      _bleService.startBleScan(); // Use public method from reverted service
+    }
+  }
+
+  void _handleCalibrate() {
+    if (_bleService.getCurrentConnectionState() == BleConnectionState.connected) {
+      print("HomeScreen: Calibrate button pressed.");
+      _bleService.sendCalibrationCommand();
+      if(mounted) {
+        setState(() => _calibrationSuccess = true);
+        _calibrationTimer?.cancel();
+        _calibrationTimer = Timer(const Duration(seconds: 3), () {
+          if (mounted) setState(() => _calibrationSuccess = false);
         });
       }
     } else {
-      print("HomeScreen: Overlay not visible or not mounted, no need to dismiss.");
-    }
-  }
-
-  // Ensure _handleFallDetectedReset also considers the overlay
-  void _handleFallDetectedReset() {
-    print("HomeScreen: Fall Detected Reset requested.");
-    _dismissFallDetectionOverlay(); // Ensure overlay is dismissed
-    setState(() {
-      _currentFallDetected = false; // Reset UI state immediately
-    });
-    _bleService.resetFallDetectedState(); // Notify the service/ESP32 to clear its state
-  }
-
-  // Modify your existing _handleSignOut to also dismiss overlay
-  Future<void> _handleSignOut() async {
-    _dismissFallDetectionOverlay(); // Dismiss overlay before signing out
-    try {
-      print("HomeScreen: Attempting sign out.");
-      await GoogleSignIn().signOut();
-      print('Signed out');
-      _bleService.disconnectCurrentDevice();
-      if (mounted) {
-        Navigator.pushReplacementNamed(context, '/login');
+      print("HomeScreen: Cannot calibrate, not connected.");
+      if(mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Cane not connected. Cannot calibrate."), duration: Duration(seconds: 2))
+        );
       }
-    } catch (error) {
-      print('Error signing out: $error');
     }
   }
 
-  // Modify dispose to also ensure overlay is dismissed if active (though less likely)
+  Future<void> _handleSignOut() async {
+    if (_isFallOverlayVisible && mounted && Navigator.canPop(context)) {
+      Navigator.of(context).pop(); // Dismiss overlay first
+      setState(() => _isFallOverlayVisible = false);
+    }
+    try {
+      print("HomeScreen: Signing out.");
+      // Disconnect before signing out from Google to ensure BLE cleanup
+      if (_bleService.getCurrentConnectionState() == BleConnectionState.connected ||
+          _bleService.getCurrentConnectionState() == BleConnectionState.connecting) {
+        await _bleService.disconnectCurrentDevice(); // Ensure it's awaited if disconnect is async
+        // Add a small delay to allow disconnect to propagate
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
+      await GoogleSignIn().signOut();
+      print("HomeScreen: Google sign out successful.");
+      if (mounted) Navigator.pushReplacementNamed(context, '/login');
+    } catch (error) {
+      print('HomeScreen: Error signing out: $error');
+    }
+  }
+
   @override
   void dispose() {
-    print("HomeScreen dispose");
-    _dismissFallDetectionOverlay(); // Attempt to dismiss overlay
-    // ... rest of your dispose method
+    print("HomeScreen: dispose called");
     _connectionStateSubscription?.cancel();
     _scanResultsSubscription?.cancel();
     _batteryLevelSubscription?.cancel();
     _fallDetectedSubscription?.cancel();
     _connectedDeviceSubscription?.cancel();
     _calibrationTimer?.cancel();
-    _bleService.disconnectCurrentDevice();
+
+    // It's generally good practice for a service not to be "disposed" by one screen
+    // if it's a true singleton intended to live longer or be used by other parts.
+    // However, if BleService is only used by HomeScreen, then calling _bleService.dispose() here might be okay.
+    // The reverted BleService's dispose() method calls disconnectFromDevice() itself.
+    // For now, let's assume the BleService manages its own lifecycle or is disposed at a higher app level if needed.
+    // If not, and it needs explicit cleanup tied to HomeScreen:
+    // _bleService.dispose();
+
     super.dispose();
-    print("HomeScreen dispose finished.");
+    print("HomeScreen: dispose finished.");
   }
 
-  // --- Button Actions ---
-  void _handleConnectDisconnect() {
-    if (_currentConnectionState == BleConnectionState.connected || _currentConnectionState == BleConnectionState.connecting || _currentConnectionState == BleConnectionState.disconnecting) {
-      print("HomeScreen: Tapped Disconnect/Connecting button.");
-      _bleService.disconnectCurrentDevice();
-    } else if (_currentConnectionState == BleConnectionState.disconnected || _currentConnectionState == BleConnectionState.scanStopped || _currentConnectionState == BleConnectionState.noPermissions || _currentConnectionState == BleConnectionState.bluetoothOff || _currentConnectionState == BleConnectionState.unknown || _currentConnectionState == BleConnectionState.scanning) {
-      print("HomeScreen: Tapped Scan/Connect button.");
-      if (_currentConnectionState == BleConnectionState.scanning) {
-        _bleService.stopScan();
-      } else {
-        _bleService.startBleScan();
-      }
-    }
-  }
-
-  void _handleCalibrate() {
-    if (_currentConnectionState == BleConnectionState.connected) {
-      print("HomeScreen: Tapped Calibrate button.");
-      _bleService.sendCalibrationCommand();
-
-      // --- Add Calibration Success Feedback Logic ---
-      setState(() {
-        _calibrationSuccess = true; // Show success feedback
-      });
-      _calibrationTimer?.cancel(); // Cancel any existing timer
-      _calibrationTimer = Timer(const Duration(seconds: 5), () {
-        setState(() {
-          _calibrationSuccess = false; // Hide success feedback after 5 seconds
-        });
-      });
-      // --- End of Calibration Success Feedback Logic ---
-
-    } else {
-      print("HomeScreen: Cannot calibrate: Not connected to the cane.");
-    }
-  }
-
+  // --- BUILD METHOD ---
+  // (Pasted from your provided code, ensure it uses the state variables correctly)
   @override
   Widget build(BuildContext context) {
-    // Access the current theme based on device settings
     final theme = Theme.of(context);
     final textTheme = theme.textTheme;
     final colorScheme = theme.colorScheme;
@@ -296,107 +305,75 @@ class _HomeScreenState extends State<HomeScreen> {
     final Color accentThemedColor = colorScheme.secondary;
     final Color errorThemedColor = colorScheme.error;
     // Warning color might not be in colorScheme, use AppTheme directly if needed
-    final Color warningThemedColor = AppTheme.warningColor; // Using static constant for this specific color
+    final Color warningThemedColor = AppTheme.warningColor;
     final Color backgroundThemedColor = theme.scaffoldBackgroundColor;
     final Color cardThemedColor = theme.cardColor;
-    // Get default text colors from the theme's text theme and on-colors from colorScheme
-    // Use onBackground for text directly on the Scaffold background
     final Color primaryTextThemedColor = colorScheme.onBackground;
     final Color secondaryTextThemedColor = colorScheme.onBackground.withOpacity(0.7);
-    // Explicitly using white for text on solid colors including warning/yellow
-    const Color textOnSolidColor = Colors.white;
-    // Text color on surface/card background uses onSurface
-    final Color onSurfaceThemedColor = colorScheme.onSurface;
+    const Color textOnSolidColor = Colors.white; // For text on solid colored buttons/cards
+    final Color onSurfaceThemedColor = colorScheme.onSurface; // For text on cards/surfaces
 
 
-    bool showStatusCards = _currentConnectionState == BleConnectionState.connected ||
-        _currentConnectionState == BleConnectionState.connecting ||
-        _currentConnectionState == BleConnectionState.disconnecting ||
-        _currentConnectionState == BleConnectionState.scanning ||
-        _currentConnectionState == BleConnectionState.scanStopped ||
-        _currentConnectionState == BleConnectionState.bluetoothOff ||
-        _currentConnectionState == BleConnectionState.noPermissions ||
-        _currentConnectionState == BleConnectionState.unknown;
+    bool showStatusCards = _currentConnectionState != BleConnectionState.disconnected || _scanResults.isNotEmpty;
+    // More nuanced: show if not disconnected AND not just idly scanStopped without results
+    // Or simply show always and let cards reflect state.
+    // Let's try: show if not (disconnected AND no scan results AND not scanning)
+    showStatusCards = !(_currentConnectionState == BleConnectionState.disconnected && _scanResults.isEmpty && _currentConnectionState != BleConnectionState.scanning);
 
 
-    // Determine which content to show in the main flexible area
     Widget mainBodyContent;
-
     if (_currentConnectionState == BleConnectionState.connected && _currentConnectedDevice != null) {
-      // Connected Device Info CONTENT
       mainBodyContent = Column(
         key: const ValueKey('connected_info'),
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const SizedBox(height: 24),
-          Text(
-            'Device Information',
-            style: textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.bold,
-              color: primaryTextThemedColor, // Use themed primary text color (on background)
-            ),
-          ),
+          Text('Device Information', style: textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold, color: primaryTextThemedColor)),
           const SizedBox(height: 16),
           Card(
-            elevation: 2,
-            color: cardThemedColor, // Use themed card color
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
+            elevation: 2, color: cardThemedColor,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), // Softer radius
             child: Padding(
               padding: const EdgeInsets.all(16.0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Device Name: ${_currentConnectedDevice!.platformName}',
-                      style: textTheme.bodyMedium?.copyWith(color: onSurfaceThemedColor) // Text on card uses onSurface
-                  ),
+                  Text('Device Name: ${_currentConnectedDevice!.platformName}', style: textTheme.titleMedium?.copyWith(color: onSurfaceThemedColor, fontWeight: FontWeight.w500)),
                   const SizedBox(height: 8),
-                  Text('Device ID: ${_currentConnectedDevice!.id.toString()}',
-                      style: textTheme.bodyMedium?.copyWith(color: onSurfaceThemedColor) // Text on card uses onSurface
-                  ),
+                  Text('Device ID: ${_currentConnectedDevice!.remoteId.toString()}', style: textTheme.bodyMedium?.copyWith(color: secondaryTextThemedColor)),
                 ],
               ),
             ),
           ),
         ],
       );
-
-    } else if ((_currentConnectionState == BleConnectionState.scanning || _currentConnectionState == BleConnectionState.scanStopped) && _scanResults.isNotEmpty) {
-      // Scan Results List CONTENT
+    } else if ((_currentConnectionState == BleConnectionState.scanning || (_currentConnectionState == BleConnectionState.scanStopped && _scanResults.isNotEmpty)) ) {
       mainBodyContent = Column(
         key: const ValueKey('scan_results'),
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Discovered Devices:',
-            style: textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.bold,
-              color: primaryTextThemedColor, // Use themed text color (on background)
-            ),
-          ),
+          Text('Discovered Devices:', style: textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold, color: primaryTextThemedColor)),
           const SizedBox(height: 8),
           Expanded(
             child: ListView.builder(
               itemCount: _scanResults.length,
               itemBuilder: (context, index) {
                 final result = _scanResults[index];
-                // Use themed colors for ListTile text (on background)
-                return ListTile(
-                  title: Text(result.device.platformName,
-                      style: textTheme.bodyMedium?.copyWith(color: primaryTextThemedColor)
+                return Card( // Wrap ListTile in a Card for better spacing/visuals
+                  margin: const EdgeInsets.symmetric(vertical: 4.0),
+                  elevation: 1.5,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  child: ListTile(
+                    contentPadding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0),
+                    title: Text(result.device.platformName.isNotEmpty ? result.device.platformName : "Unknown Device", style: textTheme.titleMedium?.copyWith(color: primaryTextThemedColor, fontWeight: FontWeight.w500)),
+                    subtitle: Text(result.device.remoteId.toString(), style: textTheme.bodySmall?.copyWith(color: secondaryTextThemedColor)),
+                    trailing: Text('${result.rssi} dBm', style: textTheme.bodyMedium?.copyWith(color: primaryThemedColor)),
+                    onTap: () {
+                      print("HomeScreen: Tapped on device: ${result.device.platformName}");
+                      // Stop scan is called within connectToDevice in the reverted BleService
+                      _bleService.connectToDevice(result.device);
+                    },
                   ),
-                  subtitle: Text(result.device.id.toString(),
-                      style: textTheme.bodySmall?.copyWith(color: secondaryTextThemedColor)
-                  ),
-                  trailing: Text('${result.rssi} dBm',
-                      style: textTheme.bodySmall?.copyWith(color: secondaryTextThemedColor)
-                  ),
-                  onTap: () {
-                    print("HomeScreen: Tapped on device: ${result.device.platformName}");
-                    _bleService.stopScan();
-                    _bleService.connectToScannedDevice(result.device);
-                  },
                 );
               },
             ),
@@ -404,447 +381,231 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       );
     } else {
-      // Placeholder or guidance text when not connected and no scan results
+      String placeholderText;
+      switch(_currentConnectionState) {
+        case BleConnectionState.connecting: placeholderText = 'Connecting to your Smart Cane...'; break;
+        case BleConnectionState.disconnecting: placeholderText = 'Disconnecting from Smart Cane...'; break;
+        case BleConnectionState.scanning: placeholderText = 'Searching for your Smart Cane...'; break;
+        case BleConnectionState.scanStopped:
+          placeholderText = _scanResults.isEmpty ? 'Scan finished. No Smart Canes found nearby. Try scanning again.' : 'Scan stopped. Tap a device to connect.';
+          break;
+        case BleConnectionState.bluetoothOff: placeholderText = 'Bluetooth is turned off. Please turn Bluetooth on to connect to your Smart Cane.'; break;
+        case BleConnectionState.noPermissions: placeholderText = 'Permissions for Bluetooth or Location are needed. Please grant them in app settings and try again.'; break;
+        case BleConnectionState.unknown: placeholderText = 'Bluetooth status is unknown. Please check your Bluetooth settings.'; break;
+        default: // disconnected
+          placeholderText = 'Your Smart Cane is disconnected. Tap "Scan for Cane" to find and connect your device.';
+      }
       mainBodyContent = Center(
-        key: ValueKey('placeholder_${_currentConnectionState}'),
+        key: ValueKey('placeholder_$_currentConnectionState'), // Unique key for AnimatedSwitcher
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24.0),
-          child: Text(
-            _currentConnectionState == BleConnectionState.connecting ? 'Connecting...'
-                : (_currentConnectionState == BleConnectionState.disconnecting ? 'Disconnecting...'
-                : (_currentConnectionState == BleConnectionState.scanning ? 'Searching for devices...'
-                : (_currentConnectionState == BleConnectionState.scanStopped ? (_scanResults.isEmpty ? 'Scan finished. No devices found.' : 'Tap device to connect.')
-                : (_currentConnectionState == BleConnectionState.bluetoothOff ? 'Bluetooth is turned off.'
-                : (_currentConnectionState == BleConnectionState.noPermissions ? 'Permissions Needed.'
-                : (_currentConnectionState == BleConnectionState.unknown ? 'Status Unknown.'
-                : 'Tap "Scan for Cane" to find your device.'
-            )))))),
-            style: textTheme.bodyMedium?.copyWith(
-              color: secondaryTextThemedColor, // Use themed secondary text color (on background)
-            ),
-            textAlign: TextAlign.center,
-          ),
+            padding: const EdgeInsets.all(32.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.bluetooth_disabled, size: 60, color: secondaryTextThemedColor),
+                const SizedBox(height: 20),
+                Text(placeholderText, style: textTheme.titleMedium?.copyWith(color: secondaryTextThemedColor, height: 1.4), textAlign: TextAlign.center),
+              ],
+            )
         ),
       );
     }
 
-
     return Scaffold(
-      // Use themed background color
       backgroundColor: backgroundThemedColor,
       appBar: AppBar(
-        // AppBar colors and title text style are handled by AppBarTheme in AppTheme
-        title: const Text('Smart Cane Dashboard'), // Text widget itself doesn't need style here if AppBarTheme is set
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            tooltip: 'Sign Out',
-            onPressed: _handleSignOut,
-            // Icon color handled by AppBarTheme in AppTheme
-          ),
-        ],
+        title: const Text('Smart Cane Dashboard'),
+        elevation: 1, // Subtle shadow
+        actions: [ IconButton(icon: const Icon(Icons.logout_rounded), tooltip: 'Sign Out', onPressed: _handleSignOut) ],
       ),
       body: Padding(
-        padding: const EdgeInsets.all(24.0),
+        padding: const EdgeInsets.all(16.0), // Consistent padding
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.stretch, // Make buttons stretch
           children: <Widget>[
-            Text(
-              'Status',
-              style: textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: primaryTextThemedColor // Use themed primary text color (on background)
-              ),
-            ),
-            const SizedBox(height: 16),
-
-            // --- Status Cards (Animated Opacity) ---
-            AnimatedOpacity(
-              opacity: showStatusCards ? 1.0 : 0.0,
+            Text('Status Overview', style: textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold, color: primaryTextThemedColor)),
+            const SizedBox(height: 12),
+            // Status Cards Area
+            AnimatedOpacity( // Keep this general opacity for the whole status section
+              opacity: 1.0, // Always show status cards, their content will reflect state
               duration: const Duration(milliseconds: 300),
-              curve: Curves.easeIn,
-              child: showStatusCards ? Column(
+              child: Column(
                 children: [
                   // Connectivity Status Card
                   StreamBuilder<BleConnectionState>(
                     stream: _bleService.connectionStateStream,
-                    initialData: _bleService.getCurrentConnectionState(),
+                    initialData: _currentConnectionState, // Use current state as initial
                     builder: (context, snapshot) {
-                      final state = snapshot.data ?? BleConnectionState.disconnected;
-                      String statusText;
-                      IconData statusIcon;
-                      Color cardBackgroundColor; // Background color of this card
-                      Color cardElementColor; // Text/Icon color on this card's background
-                      Widget? trailingWidget;
+                      final state = snapshot.data ?? _currentConnectionState; // Use latest state
+                      String statusText; IconData statusIcon; Color cardBackgroundColor; Color cardElementColor; Widget? trailingWidget;
 
                       switch (state) {
                         case BleConnectionState.connected:
-                          statusText = "Connected";
-                          statusIcon = Icons.bluetooth_connected;
-                          cardBackgroundColor = accentThemedColor; // Connected card is accent colored
-                          cardElementColor = textOnSolidColor; // Text color on accent background (white)
-                          trailingWidget = Icon(Icons.check_circle, color: cardElementColor); // Icon color on accent background
-                          break;
+                          statusText = "Connected: ${_currentConnectedDevice?.platformName ?? 'Smart Cane'}";
+                          statusIcon = Icons.bluetooth_connected_rounded; cardBackgroundColor = accentThemedColor; cardElementColor = textOnSolidColor;
+                          trailingWidget = Icon(Icons.check_circle_rounded, color: cardElementColor, size: 20); break;
                         case BleConnectionState.connecting:
-                          statusText = "Connecting...";
-                          statusIcon = Icons.bluetooth_searching;
-                          cardBackgroundColor = warningThemedColor; // Connecting card is warning colored (yellow)
-                          cardElementColor = textOnSolidColor; // Text color on warning background (explicitly white)
-                          trailingWidget = CircularProgressIndicator(strokeWidth: 2, color: cardElementColor); // Progress indicator color
-                          break;
+                          statusText = "Connecting..."; statusIcon = Icons.bluetooth_searching_rounded; cardBackgroundColor = warningThemedColor; cardElementColor = textOnSolidColor;
+                          trailingWidget = SizedBox(width:18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: cardElementColor)); break;
                         case BleConnectionState.disconnected:
-                          statusText = "Disconnected";
-                          statusIcon = Icons.bluetooth_disabled;
-                          cardBackgroundColor = cardThemedColor; // Disconnected card is standard card color
-                          cardElementColor = onSurfaceThemedColor; // Text color on card background (dark/light based on theme)
-                          break;
+                          statusText = "Disconnected"; statusIcon = Icons.bluetooth_disabled_rounded; cardBackgroundColor = cardThemedColor; cardElementColor = onSurfaceThemedColor; break;
                         case BleConnectionState.disconnecting:
-                          statusText = "Disconnecting...";
-                          statusIcon = Icons.bluetooth_disabled;
-                          cardBackgroundColor = warningThemedColor; // Disconnecting card is warning colored (yellow)
-                          cardElementColor = textOnSolidColor; // Text color on warning background (explicitly white)
-                          trailingWidget = CircularProgressIndicator(strokeWidth: 2, color: cardElementColor); // Progress indicator color
-                          break;
+                          statusText = "Disconnecting..."; statusIcon = Icons.bluetooth_disabled_rounded; cardBackgroundColor = warningThemedColor; cardElementColor = textOnSolidColor;
+                          trailingWidget = SizedBox(width:18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: cardElementColor)); break;
                         case BleConnectionState.bluetoothOff:
-                          statusText = "Bluetooth is Off";
-                          statusIcon = Icons.bluetooth_disabled;
-                          cardBackgroundColor = errorThemedColor; // Error states are error colored (red)
-                          cardElementColor = textOnSolidColor; // Text color on error background (white)
-                          break;
+                          statusText = "Bluetooth is Off"; statusIcon = Icons.bluetooth_disabled_rounded; cardBackgroundColor = errorThemedColor; cardElementColor = textOnSolidColor; break;
                         case BleConnectionState.noPermissions:
-                          statusText = "Permissions Needed";
-                          statusIcon = Icons.bluetooth_disabled;
-                          cardBackgroundColor = errorThemedColor; // Error states are error colored (red)
-                          cardElementColor = textOnSolidColor; // Text color on error background (white)
-                          break;
-                        case BleConnectionState.unknown:
-                          statusText = "Status Unknown";
-                          statusIcon = Icons.bluetooth_disabled;
-                          cardBackgroundColor = errorThemedColor; // Error states are error colored (red)
-                          cardElementColor = textOnSolidColor; // Text color on error background (white)
-                          break;
+                          statusText = "Permissions Required"; statusIcon = Icons.gpp_bad_rounded; cardBackgroundColor = errorThemedColor; cardElementColor = textOnSolidColor; break;
                         case BleConnectionState.scanning:
-                          statusText = "Scanning...";
-                          statusIcon = Icons.bluetooth_searching;
-                          cardBackgroundColor = warningThemedColor; // Scanning card is warning colored (yellow)
-                          cardElementColor = textOnSolidColor; // Text color on warning background (explicitly white)
-                          trailingWidget = CircularProgressIndicator(strokeWidth: 2, color: cardElementColor); // Progress indicator color
-                          break;
+                          statusText = "Scanning..."; statusIcon = Icons.search_rounded; cardBackgroundColor = warningThemedColor; cardElementColor = textOnSolidColor;
+                          trailingWidget = SizedBox(width:18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: cardElementColor)); break;
                         case BleConnectionState.scanStopped:
-                          statusText = "Scan Stopped";
-                          statusIcon = Icons.bluetooth_disabled;
-                          cardBackgroundColor = cardThemedColor; // Scan stopped card is standard card color
-                          cardElementColor = onSurfaceThemedColor; // Text color on card background (dark/light based on theme)
-                          break;
+                          statusText = "Scan Stopped"; statusIcon = Icons.search_off_rounded; cardBackgroundColor = cardThemedColor; cardElementColor = onSurfaceThemedColor; break;
+                        default: // unknown
+                          statusText = "Status Unknown"; statusIcon = Icons.help_outline_rounded; cardBackgroundColor = Colors.grey.shade700; cardElementColor = textOnSolidColor;
                       }
-
-
                       return Card(
-                        elevation: 2,
-                        color: cardBackgroundColor, // Use determined background color
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Padding(
-                          padding: const EdgeInsets.all(16.0),
-                          child: Row(
-                            children: [
-                              Icon(statusIcon, color: cardElementColor), // Icon color matches text color
-                              const SizedBox(width: 16),
-                              Expanded(
-                                child: Text(
-                                  'Connectivity Status: $statusText',
-                                  style: textTheme.bodyMedium?.copyWith(color: cardElementColor), // Use determined text color
-                                ),
-                              ),
-                              if (trailingWidget != null) trailingWidget,
-                            ],
-                          ),
+                        elevation: 2, color: cardBackgroundColor, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        child: Padding(padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                          child: Row(children: [
+                            Icon(statusIcon, color: cardElementColor, size: 26), const SizedBox(width: 12),
+                            Expanded(child: Text(statusText, style: textTheme.titleSmall?.copyWith(color: cardElementColor, fontWeight: FontWeight.w500))),
+                            if (trailingWidget != null) trailingWidget,
+                          ]),
                         ),
                       );
                     },
                   ),
-
-                  const SizedBox(height: 16),
-
+                  const SizedBox(height: 8),
                   // Battery Level Card
-                  StreamBuilder<int?>(
-                    stream: _bleService.batteryLevelStream,
-                    initialData: _currentBatteryLevel,
-                    builder: (context, snapshot) {
-                      final batteryLevel = snapshot.data;
-                      IconData batteryIcon; // Variable to hold the icon data
-                      Color batteryIconColor; // Variable to hold the icon color
-                      String batteryText;
-                      Color cardElementColor = onSurfaceThemedColor; // Text color on standard card
-
-                      // --- Logic to determine icon and color ---
-                      if (_currentConnectionState != BleConnectionState.connected) {
-                        batteryIcon = Icons.battery_unknown; // Unknown icon when not connected
-                        batteryIconColor = secondaryTextThemedColor; // Use secondary color when not connected
-                        batteryText = 'N/A';
-                      } else if (batteryLevel != null) {
-                        // Determine icon based on battery level when connected
-                        if (batteryLevel > 95) {
-                          batteryIcon = Icons.battery_full;
-                        } else if (batteryLevel > 90) {
-                          batteryIcon = Icons.battery_6_bar;
-                        } else if (batteryLevel > 75) {
-                          batteryIcon = Icons.battery_5_bar;
-                        } else if (batteryLevel > 60) {
-                          batteryIcon = Icons.battery_4_bar;
-                        } else if (batteryLevel > 45) {
-                          batteryIcon = Icons.battery_3_bar;
-                        } else if (batteryLevel > 30) {
-                          batteryIcon = Icons.battery_2_bar;
-                        } else if (batteryLevel > 15) {
-                          batteryIcon = Icons.battery_1_bar;
-                        } else if (batteryLevel > 5) {
-                          batteryIcon = Icons.battery_0_bar;
-                        } else {
-                          batteryIcon = Icons.battery_alert;
-                        }
-
-                        // Determine icon color based on battery level when connected
-                        batteryIconColor = (batteryLevel > 45)
-                            ? accentThemedColor // Use accent color for good battery
-                            : (batteryLevel > 15 ? warningThemedColor
-                            : errorThemedColor); // Use error color for low battery
-
-                        batteryText = '$batteryLevel%';
-                      } else {
-                        batteryIcon = Icons.battery_unknown; // Unknown icon if level is null
-                        batteryIconColor = secondaryTextThemedColor; // Use secondary color if level is null
-                        batteryText = 'Loading...'; // Text if level is null
-                      }
-                      // --- End of Logic ---
-
-
-                      return Card(
-                        elevation: 2,
-                        color: cardThemedColor, // Use themed card color
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
+                  Card(elevation: 2, color: cardThemedColor, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    child: Padding(padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                      child: Row(children: [
+                        Icon(
+                            _currentConnectionState == BleConnectionState.connected && _currentBatteryLevel != null
+                                ? (_currentBatteryLevel! > 95 ? Icons.battery_full_rounded :
+                            _currentBatteryLevel! > 80 ? Icons.battery_6_bar_rounded :
+                            _currentBatteryLevel! > 65 ? Icons.battery_5_bar_rounded :
+                            _currentBatteryLevel! > 50 ? Icons.battery_4_bar_rounded :
+                            _currentBatteryLevel! > 35 ? Icons.battery_3_bar_rounded :
+                            _currentBatteryLevel! > 20 ? Icons.battery_2_bar_rounded :
+                            _currentBatteryLevel! > 5  ? Icons.battery_1_bar_rounded : Icons.battery_alert_rounded)
+                                : Icons.battery_unknown_rounded,
+                            color: _currentConnectionState == BleConnectionState.connected && _currentBatteryLevel != null
+                                ? (_currentBatteryLevel! > 40 ? accentThemedColor : _currentBatteryLevel! > 15 ? warningThemedColor : errorThemedColor)
+                                : secondaryTextThemedColor,
+                            size: 26),
+                        const SizedBox(width: 12),
+                        Text(
+                          'Battery: ${_currentConnectionState == BleConnectionState.connected ? (_currentBatteryLevel?.toString() ?? '...') + '%' : 'N/A'}',
+                          style: textTheme.titleSmall?.copyWith(color: onSurfaceThemedColor, fontWeight: FontWeight.w500),
                         ),
-                        child: Padding(
-                          padding: const EdgeInsets.all(16.0),
-                          child: Row(
-                            children: [
-                              Icon(batteryIcon, color: batteryIconColor), // Use determined icon and color
-                              const SizedBox(width: 16),
-                              Text(
-                                'Battery Level: $batteryText',
-                                style: textTheme.bodyMedium?.copyWith(color: cardElementColor), // Use themed text color on card
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
+                      ]),
+                    ),
                   ),
-
-                  const SizedBox(height: 16),
-
-                  // Fall Detection Status Card with Reset Button
-                  StreamBuilder<bool?>( // Stream type matches service stream
-                    stream: _bleService.fallDetectedStream,
-                    initialData: _currentFallDetected, // Initial data is non-nullable bool
-                    builder: (context, snapshot) {
-                      // Use the internal state for UI display, which is controlled by the stream listener
-                      final fallDetected = _currentFallDetected; // Use the state variable
-
-                      // Text and icon color when fall is detected is explicitly white
-                      // Text and icon color when NOT detected is onSurfaceThemedColor (text color on card background)
-                      final Color cardElementColor = fallDetected ? textOnSolidColor : onSurfaceThemedColor;
-
-
-                      return Card(
-                        elevation: 2,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
+                  const SizedBox(height: 8),
+                  // Fall Detection Card
+                  Card(
+                    elevation: 2, color: _currentFallDetectedUiState ? errorThemedColor : cardThemedColor,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    child: Padding(padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                      child: Row(children: [
+                        Icon(
+                          _currentFallDetectedUiState ? Icons.error_rounded :
+                          (_currentConnectionState == BleConnectionState.connected ? Icons.verified_user_outlined : Icons.shield_outlined), // Custom icons
+                          color: _currentFallDetectedUiState ? textOnSolidColor :
+                          (_currentConnectionState == BleConnectionState.connected ? accentThemedColor : secondaryTextThemedColor),
+                          size: 26,
                         ),
-                        color: fallDetected ? errorThemedColor : cardThemedColor, // Use themed error/card color for background
-                        child: Padding(
-                          padding: const EdgeInsets.all(16.0),
-                          child: Row(
-                            children: [
-                              Icon(
-                                fallDetected ? Icons.warning :
-                                (_currentConnectionState == BleConnectionState.connected ? Icons.check_circle_outline : Icons.sync_problem_outlined),
-                                color: fallDetected || _currentConnectionState != BleConnectionState.connected ? cardElementColor : accentThemedColor, // Apply determined color
-                              ),
-                              const SizedBox(width: 16),
-                              Expanded(
-                                child: Text(
-                                  '${fallDetected ? 'Fall Detected!' :
-                                  (_currentConnectionState == BleConnectionState.connected ? 'No Fall Detected' : 'No Device Connected!')}',
-                                  style: textTheme.bodyMedium?.copyWith(
-                                    color: cardElementColor, // Apply determined text color
-                                  ),
-                                ),
-                              ),
-                              if (fallDetected)
-                                TextButton(
-                                  onPressed: _handleFallDetectedReset,
-                                  child: Text(
-                                    'Reset',
-                                    style: textTheme.labelLarge?.copyWith(
-                                      color: cardElementColor, // Apply determined text color (should be white when fallDetected)
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ),
-                            ],
+                        const SizedBox(width: 12),
+                        Expanded(child: Text(
+                          _currentFallDetectedUiState ? 'FALL DETECTED!' :
+                          (_currentConnectionState == BleConnectionState.connected ? 'Protected' : 'Cane Disconnected'),
+                          style: textTheme.titleSmall?.copyWith(
+                            color: _currentFallDetectedUiState ? textOnSolidColor : onSurfaceThemedColor,
+                            fontWeight: _currentFallDetectedUiState ? FontWeight.bold : FontWeight.w500,
                           ),
-                        ),
-                      );
-                    },
+                        )),
+                        if (_currentFallDetectedUiState)
+                          TextButton(
+                            onPressed: _handleFallDetectedResetLogic,
+                            child: Text('RESET', style: textTheme.labelMedium?.copyWith(color: textOnSolidColor, fontWeight: FontWeight.bold)),
+                            style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4)),
+                          ),
+                      ]),
+                    ),
                   ),
                 ],
-              ) : const SizedBox.shrink(),
+              ),
             ),
-
-
-            const SizedBox(height: 40),
-
-            // --- Action Buttons ---
-
-            // Connect/Disconnect/Scan Button
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: _currentConnectionState == BleConnectionState.connecting ||
-                    _currentConnectionState == BleConnectionState.disconnecting ||
-                    _currentConnectionState == BleConnectionState.bluetoothOff ||
-                    _currentConnectionState == BleConnectionState.noPermissions ||
-                    _currentConnectionState == BleConnectionState.unknown ? null : _handleConnectDisconnect,
-                style: ElevatedButton.styleFrom(
-                  // Ensure foreground color is white on colored buttons
-                  foregroundColor: textOnSolidColor, // Explicitly use white for text on this primary colored button
-                ),
-                child: Text(
-                  _currentConnectionState == BleConnectionState.connected ? 'Disconnect'
+            const SizedBox(height: 20), // Spacing before buttons
+            // Action Buttons
+            ElevatedButton.icon(
+              icon: Icon(
+                  _currentConnectionState == BleConnectionState.connected ? Icons.bluetooth_disabled_rounded
+                      : _currentConnectionState == BleConnectionState.scanning ? Icons.stop_circle_outlined
+                      : Icons.bluetooth_searching_rounded,
+                  color: textOnSolidColor),
+              label: Text(
+                  _currentConnectionState == BleConnectionState.connected ? 'Disconnect Cane'
                       : (_currentConnectionState == BleConnectionState.connecting ? 'Connecting...'
-                      : (_currentConnectionState == BleConnectionState.scanning ? 'Scanning...'
-                      : (_currentConnectionState == BleConnectionState.scanStopped ? (_scanResults.isEmpty ? 'Scan finished. No devices found.' : 'Tap device to connect.')
-                      : 'Scan for Cane'))),
-                ),
+                      : (_currentConnectionState == BleConnectionState.scanning ? 'Stop Scan'
+                      : 'Scan for Cane')), style: textTheme.labelLarge?.copyWith(color: textOnSolidColor)),
+              onPressed: (_currentConnectionState == BleConnectionState.connecting || _currentConnectionState == BleConnectionState.disconnecting)
+                  ? null : _handleConnectDisconnect,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _currentConnectionState == BleConnectionState.connected ? errorThemedColor.withOpacity(0.9) :
+                (_currentConnectionState == BleConnectionState.noPermissions ? errorThemedColor : primaryThemedColor),
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                textStyle: textTheme.labelLarge, // Ensure this is applied
               ),
             ),
-            const SizedBox(height: 16),
-
-            // Calibrate Button
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: _currentConnectionState == BleConnectionState.connected && !_calibrationSuccess // Disable button while showing success
-                    ? _handleCalibrate
-                    : null,
-                style: ButtonStyle( // Use ButtonStyle for MaterialStateProperty
-                  // --- More Robust Background Color Logic ---
-                  backgroundColor: MaterialStateProperty.resolveWith<Color?>((states) {
-                    if (_calibrationSuccess) {
-                      return accentThemedColor; // Green when successful
-                    }
-                    if (states.contains(MaterialState.disabled)) {
-                      return theme.disabledColor; // Theme's disabled color
-                    }
-                    // Use primary color when connected and not successful/disabled
-                    return primaryThemedColor;
-                  }),
-                  // --- More Robust Foreground Color (Text/Icon) Logic ---
-                  foregroundColor: MaterialStateProperty.resolveWith<Color?>((states) {
-                    if (_calibrationSuccess || _currentConnectionState == BleConnectionState.connected) {
-                      // White text/icon when showing success (green background)
-                      // or when connected (blue background)
-                      return textOnSolidColor;
-                    }
-                    // Dark text when disabled (on disabled color background)
-                    if (states.contains(MaterialState.disabled)) {
-                      return theme.colorScheme.onSurface.withOpacity(0.38);
-                    }
-                    // Default text color (shouldn't be reached with the above logic but good practice)
-                    return theme.colorScheme.onSurface;
-                  }),
-                  padding: MaterialStateProperty.all(const EdgeInsets.symmetric(horizontal: 24, vertical: 12)),
-                  shape: MaterialStateProperty.all(RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  )),
-                  // Text style is often inherited, but can be set here if needed
-                  // textStyle: MaterialStateProperty.all(textTheme.labelLarge),
-                ),
-                // --- Refined AnimatedSwitcher with Scale Transition ---
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 300), // Animation duration
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              icon: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 300),
                   transitionBuilder: (Widget child, Animation<double> animation) {
-                    // Scale Transition
-                    return ScaleTransition(
-                      scale: animation, // Scale the child widget
-                      child: child,
-                    );
-                    // Or a simple Fade Transition
-                    // return FadeTransition(
-                    //   opacity: animation,
-                    //   child: child,
-                    // );
+                    return ScaleTransition(scale: animation, child: child);
                   },
-                  child: _calibrationSuccess // Show different content based on success state
-                      ? Row( // Row for checkmark and text
-                    key: const ValueKey('calibration_success'), // Unique key for AnimatedSwitcher
-                    mainAxisSize: MainAxisSize.min, // Keep row size minimal
-                    mainAxisAlignment: MainAxisAlignment.center, // Center content in the button
-                    children: [
-                      Icon(Icons.check_circle_outline, color: textOnSolidColor), // White checkmark icon
-                      const SizedBox(width: 8), // Spacing
-                      Text(
-                        'Calibration Successful',
-                        style: textTheme.labelLarge?.copyWith(color: textOnSolidColor), // White text
-                      ),
-                    ],
-                  )
-                      : Text( // Standard button text
-                      key: const ValueKey('calibrate_button_text'), // Unique key for AnimatedSwitcher
-                      'Calibrate Cane',
-                      style: textTheme.labelLarge?.copyWith( // Apply theme text style
-                        color: textOnSolidColor, // Text color is white on colored button
-                      )
-                  ),
-                ),
-                // --- End of AnimatedSwitcher ---
+                  child: _calibrationSuccess
+                      ? Icon(Icons.check_circle_rounded, key: const ValueKey('cal_success'), color: accentThemedColor)
+                      : Icon(Icons.settings_input_component_rounded,  key: const ValueKey('cal_default'), color: _currentConnectionState == BleConnectionState.connected ? primaryThemedColor : theme.disabledColor.withOpacity(0.6))
+              ), // Changed icon
+              label: Text(_calibrationSuccess ? 'Cane Calibrated!' : 'Calibrate Cane', style: textTheme.labelLarge),
+              onPressed: (_currentConnectionState == BleConnectionState.connected && !_calibrationSuccess) ? _handleCalibrate : null,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: _calibrationSuccess ? accentThemedColor : (_currentConnectionState == BleConnectionState.connected ? primaryThemedColor : theme.disabledColor.withOpacity(0.7)),
+                side: BorderSide(color: _calibrationSuccess ? accentThemedColor : (_currentConnectionState == BleConnectionState.connected ? primaryThemedColor.withOpacity(0.7) : theme.disabledColor.withOpacity(0.4)), width: 1.5),
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                textStyle: textTheme.labelLarge, // Ensure this is applied
               ),
             ),
-
-            const SizedBox(height: 24),
-
-            // --- Main Body Section (Animated Switcher) ---
+            const SizedBox(height: 16), // Spacing before main content area
             Expanded(
               child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 300),
-                switchInCurve: Curves.easeIn,
-                switchOutCurve: Curves.easeOut,
+                duration: const Duration(milliseconds: 350),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
                 transitionBuilder: (widget, animation) {
                   return FadeTransition(
                     opacity: animation,
-                    child: SlideTransition(
-                      position: Tween<Offset>(
-                        begin: const Offset(0.0, 0.05),
-                        end: Offset.zero,
-                      ).animate(animation),
+                    child: SlideTransition( // Add slight slide for content change
+                      position: Tween<Offset>(begin: const Offset(0.0, 0.03), end: Offset.zero).animate(animation),
                       child: widget,
                     ),
                   );
                 },
                 child: KeyedSubtree(
                   key: ValueKey<String>(
-                      _currentConnectionState == BleConnectionState.connected ? 'connected'
-                          : (_currentConnectionState == BleConnectionState.scanning || _currentConnectionState == BleConnectionState.scanStopped ? 'scan_results'
-                          : 'placeholder')
-                  ),
+                      _currentConnectionState == BleConnectionState.connected ? 'device_info_content' :
+                      ((_currentConnectionState == BleConnectionState.scanning || _currentConnectionState == BleConnectionState.scanStopped) && _scanResults.isNotEmpty ? 'scan_results_content' : 'placeholder_content_${_currentConnectionState}')
+                  ), // More descriptive keys
                   child: mainBodyContent,
                 ),
               ),
             ),
-
           ],
         ),
       ),

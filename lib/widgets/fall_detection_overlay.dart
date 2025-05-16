@@ -2,11 +2,10 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // For built-in HapticFeedback if flutter_vibrate fails
+import 'package:flutter/services.dart'; // For HapticFeedback
 import 'package:smart_cane_prototype/utils/app_theme.dart';
 import 'package:slide_to_act/slide_to_act.dart';
 import 'package:audioplayers/audioplayers.dart';
-// import 'package:flutter_vibrate/flutter_vibrate.dart'; // Keep if it works, otherwise use HapticFeedback
 
 class FallDetectionOverlay extends StatefulWidget {
   final VoidCallback onImOk;
@@ -55,12 +54,11 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
   bool _popCircleToFullWhite = false;
   bool _hideCountdownNumber = false;
 
-  // Audio and Haptics
   final AudioPlayer _audioPlayer = AudioPlayer();
-  bool _canVibrate = true; // Assume true, or check with flutter_vibrate if using it
+  StreamSubscription? _playerStateSubscription; // To listen to player state
   bool _alarmSoundPlaying = false;
 
-  // Durations
+
   final Duration _rushProgressDuration = const Duration(milliseconds: 600);
   final Duration _zoomIconDuration = const Duration(milliseconds: 700);
   final Duration _bgColorChangeDuration = const Duration(milliseconds: 400);
@@ -119,74 +117,101 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
     );
     // --- End Animation Controllers Initialization ---
 
-    _initAudioAndHaptics(); // Initialize audio and haptics
+    _setupAudioPlayer(); // Setup audio player and listeners
+    _initHapticsAndPlaySound(); // Trigger initial haptics and sound
 
     _progressAnimationController.forward();
     _startSecondUpdaterTimer();
   }
 
-  Future<void> _initAudioAndHaptics() async {
-    // For flutter_vibrate (if using and working)
-    // _canVibrate = await Vibrate.canVibrate;
-    // if (mounted && _canVibrate) {
-    //   Vibrate.feedback(FeedbackType.heavy); // Initial heavy impact
-    // }
+  Future<void> _setupAudioPlayer() async {
+    // Listen to player state changes for debugging
+    _playerStateSubscription = _audioPlayer.onPlayerStateChanged.listen((PlayerState s) {
+      print('FallDetectionOverlay: AudioPlayer current state: $s');
+      if (s == PlayerState.completed && _alarmSoundPlaying) {
+        // If it completed and wasn't stopped intentionally, and loop is desired, play again.
+        // Note: setReleaseMode(ReleaseMode.loop) should handle this, but this is a fallback.
+        // Be careful with this manual re-play if ReleaseMode.loop is also active.
+        // For now, relying on ReleaseMode.loop.
+      }
+      if (s == PlayerState.stopped || s == PlayerState.completed || s == PlayerState.disposed) {
+        // If it stopped for any reason other than pause, mark as not playing.
+        // This helps ensure _playAlarmSound can be called again if needed.
+        // However, _stopAlarmSound should be the primary way to set _alarmSoundPlaying to false.
+        // if (_alarmSoundPlaying && s != PlayerState.paused) {
+        //   _alarmSoundPlaying = false;
+        // }
+      }
+    });
 
-    // For built-in HapticFeedback
-    HapticFeedback.heavyImpact(); // Initial heavy impact
+    _audioPlayer.onLog.listen((msg) { // Listen to logs from audioplayers
+      print('FallDetectionOverlay: audioplayers log: $msg');
+    });
 
-    // Configure audio player for looping
-    await _audioPlayer.setReleaseMode(ReleaseMode.loop);
-    // Consider using a specific alarm sound from your assets
-    // For example: await _audioPlayer.play(AssetSource('sounds/emergency_alarm.mp3'));
-    // For now, a placeholder for where you'd start the sound:
-    _playAlarmSound();
+    // Set AudioContext for Android to use ALARM stream
+    await _audioPlayer.setAudioContext(AudioContext(
+      android: AudioContextAndroid(
+        isSpeakerphoneOn: true,
+        stayAwake: true,
+        contentType: AndroidContentType.sonification,
+        usageType: AndroidUsageType.alarm, // CRITICAL
+        audioFocus: AndroidAudioFocus.gain, // Try full gain instead of gainTransientMayDuck
+      ),
+      // iOS: AudioContextIOS(category: AVAudioSessionCategory.playback, options: []), // Minimal for iOS as per request
+    ));
+    await _audioPlayer.setReleaseMode(ReleaseMode.loop); // Ensure looping
+    await _audioPlayer.setVolume(1.0); // Set volume to max for this player instance
+  }
+
+  Future<void> _initHapticsAndPlaySound() async {
+    print("FallDetectionOverlay: Initializing Haptics and Playing Sound.");
+    HapticFeedback.heavyImpact();
+    print("FallDetectionOverlay: Initial heavyImpact triggered.");
+    _playAlarmSound(); // Attempt to play alarm sound
   }
 
   Future<void> _playAlarmSound() async {
-    if (_alarmSoundPlaying) return;
+    if (_alarmSoundPlaying && _audioPlayer.state == PlayerState.playing) {
+      print("FallDetectionOverlay: Alarm sound already playing.");
+      return;
+    }
     try {
-      // Replace 'sounds/your_alarm_sound.mp3' with your actual asset path
-      await _audioPlayer.play(AssetSource('sounds/alarm.mp3'));
+      print("FallDetectionOverlay: Attempting to play alarm sound.");
+      // IMPORTANT: Replace 'sounds/your_alarm_sound.mp3' with your asset path
+      await _audioPlayer.play(AssetSource('sounds/your_alarm_sound.mp3'));
       _alarmSoundPlaying = true;
-      print("Alarm sound started.");
+      print("FallDetectionOverlay: Alarm sound play command issued.");
     } catch (e) {
-      print("Error playing alarm sound: $e");
+      print("FallDetectionOverlay: Error playing alarm sound: $e");
+      _alarmSoundPlaying = false; // Ensure flag is false on error
     }
   }
 
   Future<void> _stopAlarmSound() async {
-    if (!_alarmSoundPlaying) return;
-    try {
-      await _audioPlayer.stop();
-      _alarmSoundPlaying = false;
-      print("Alarm sound stopped.");
-    } catch (e) {
-      print("Error stopping alarm sound: $e");
+    print("FallDetectionOverlay: Attempting to stop alarm sound. Currently playing: $_alarmSoundPlaying, State: ${_audioPlayer.state}");
+    if (_audioPlayer.state == PlayerState.playing || _audioPlayer.state == PlayerState.paused) {
+      try {
+        await _audioPlayer.stop();
+        print("FallDetectionOverlay: Alarm sound stop command issued.");
+      } catch (e) {
+        print("FallDetectionOverlay: Error stopping alarm sound: $e");
+      }
     }
+    _alarmSoundPlaying = false; // Always set to false after attempting to stop
   }
 
-  void _triggerHapticFeedback(FeedbackType type) { // Using flutter_vibrate types as example
-    // if (_canVibrate) {
-    //   Vibrate.feedback(type);
-    // }
-    // If using built-in HapticFeedback:
+  void _triggerHapticFeedback(String type) { /* ... (same as before) ... */
+    print("FallDetectionOverlay: Triggering haptic: $type");
     switch (type) {
-      case FeedbackType.light:
-        HapticFeedback.lightImpact();
-        break;
-      case FeedbackType.medium:
-        HapticFeedback.mediumImpact();
-        break;
-      case FeedbackType.heavy:
-        HapticFeedback.heavyImpact();
-        break;
-      case FeedbackType.success:
-        HapticFeedback.mediumImpact(); // Or a specific success pattern if available
-        break;
-    // Add other cases if needed
-      default:
-        HapticFeedback.selectionClick();
+      case 'light': HapticFeedback.lightImpact(); break;
+      case 'medium': HapticFeedback.mediumImpact(); break;
+      case 'heavy': HapticFeedback.heavyImpact(); break;
+      default: HapticFeedback.selectionClick();
+    }
+  }
+  void _pulseHapticForCountdown() { /* ... (same as before) ... */
+    if (mounted && _isTimerActive) {
+      HapticFeedback.mediumImpact();
     }
   }
 
@@ -194,13 +219,13 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
   void _startSecondUpdaterTimer() {
     _isTimerActive = true;
     _secondUpdaterTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      _triggerHapticFeedback(FeedbackType.light); // Haptic pulse each second
+      _pulseHapticForCountdown();
       if (_remainingSeconds > 0) {
         if (mounted) setState(() => _remainingSeconds--);
       } else {
-        timer.cancel();
-        if (_isTimerActive && mounted) {
-          _stopAlarmSound(); // Stop alarm before triggering sequence
+        timer.cancel(); // Stop this timer first
+        if (_isTimerActive && mounted) { // Check _isTimerActive again
+          // Auto-triggered emergency action
           _triggerActionSequence(widget.onCallEmergency, Icons.phone_in_talk_outlined, isOkAction: false, autoTriggered: true);
         }
       }
@@ -208,15 +233,20 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
   }
 
   Future<void> _triggerActionSequence(VoidCallback action, IconData icon, {required bool isOkAction, bool autoTriggered = false}) async {
-    if (!_isTimerActive && !autoTriggered) return;
+    if (!_isTimerActive && !autoTriggered) { // If timer already inactive (e.g. user acted) and this isn't the auto-trigger
+      print("FallDetectionOverlay: Action sequence blocked or already handled.");
+      return;
+    }
+    print("FallDetectionOverlay: Triggering action sequence. isOkAction: $isOkAction, autoTriggered: $autoTriggered");
 
+    // Stop everything related to ongoing alert sensory feedback
     _isTimerActive = false;
-    _secondUpdaterTimer.cancel();
+    _secondUpdaterTimer.cancel(); // Explicitly cancel, though it might have self-cancelled if autoTriggered
     _progressAnimationController.stop();
-    _rushAnimationStartProgress = _currentAnimationProgress;
+    await _stopAlarmSound(); // Stop sound FIRST
+    _triggerHapticFeedback('heavy'); // Confirmation haptic
 
-    _stopAlarmSound(); // Ensure alarm is stopped
-    _triggerHapticFeedback(FeedbackType.success); // Confirmation haptic
+    _rushAnimationStartProgress = _currentAnimationProgress;
 
     setState(() {
       _actionSubmitted = true;
@@ -228,14 +258,16 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
     _sliderFadeController.forward();
 
     Color targetBgColor = isOkAction ? AppTheme.accentColor : AppTheme.errorColor;
-    _bgColorAnimation = ColorTween(begin: _currentBackgroundColor, end: targetBgColor)
-        .animate(CurvedAnimation(parent: _bgColorAnimationController, curve: Curves.easeInOut));
-    _bgColorAnimationController.reset();
-    _bgColorAnimationController.forward();
+    if (_currentBackgroundColor != targetBgColor) {
+      _bgColorAnimation = ColorTween(begin: _currentBackgroundColor, end: targetBgColor)
+          .animate(CurvedAnimation(parent: _bgColorAnimationController, curve: Curves.easeInOut));
+      _bgColorAnimationController.reset();
+      _bgColorAnimationController.forward();
+    }
 
     await Future.delayed(const Duration(milliseconds: 150));
 
-    if (mounted && !_isTimerActive) {
+    if (mounted) { // Check mounted before starting next phase animations
       _rushProgressAnimationController.forward(from: 0.0);
     }
 
@@ -248,37 +280,24 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
 
   @override
   void dispose() {
+    _stopAlarmSound(); // Ensure sound is stopped
     _secondUpdaterTimer.cancel();
     _progressAnimationController.dispose();
     _rushProgressAnimationController.dispose();
     _zoomIconAnimationController.dispose();
     _bgColorAnimationController.dispose();
     _sliderFadeController.dispose();
-    _audioPlayer.dispose(); // Release audio player resources
-    print("FallDetectionOverlay disposed, alarm should be stopped.");
+    _playerStateSubscription?.cancel(); // Cancel player state listener
+    _audioPlayer.dispose();
+    print("FallDetectionOverlay disposed. Resources released.");
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // ... (rest of the build method is identical to the previous version)
-    // ... (ensure all size constants and widget building logic remains the same)
-    // ... (including submittedActionFeedback, buildSliderWrapper, Scaffold, etc.)
-
-    // --- For brevity, I'm not repeating the entire build method if no changes were made to it ---
-    // --- The changes are primarily in initState, _initAudioAndHaptics, _play/stopAlarmSound, _triggerHapticFeedback, _startSecondUpdaterTimer, _triggerActionSequence, and dispose ---
-
-    // --- PASTE THE PREVIOUS CORRECT `build` METHOD HERE ---
-    // Starting from:
-    // final theme = Theme.of(context);
-    // ... down to the end of the build method.
-    // NO CHANGES were made to the UI rendering part of the build method in this step.
-    // The logic for haptics and audio is in the state management methods.
-
-    // --- Placeholder for where the build method content from the previous step goes ---
-    // This is just to keep the response size manageable.
-    // Ensure you use the full build method from the prior correct version.
-    // The key changes are in the state logic, not the widget tree structure itself.
+    // --- NO CHANGES TO THE BUILD METHOD ITSELF ---
+    // --- Paste the previous correct 'build' method here ---
+    // The logic changes are in initState, audio methods, and _triggerActionSequence
     final theme = Theme.of(context);
     final textTheme = theme.textTheme;
     const Color onAlertColor = Colors.white;
@@ -287,8 +306,8 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
     final Color currentProgressCircleColor;
 
     if (_popCircleToFullWhite) {
-      displayProgress = 1.0; // Full circle for "pop"
-      currentProgressCircleColor = onAlertColor; // Solid white
+      displayProgress = 1.0;
+      currentProgressCircleColor = onAlertColor;
     } else {
       displayProgress = _currentAnimationProgress;
       currentProgressCircleColor = onAlertColor;
@@ -298,8 +317,8 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
     const double countdownCircleDiameter = 280.0;
     const double countdownStrokeWidth = 12.0;
     const double sliderHeight = 80.0;
-    const double sliderIconSize = 40.0; // For the icon inside CircleAvatar
-    final double sliderCircleAvatarRadius = sliderHeight / 2.2; // Radius of CircleAvatar
+    const double sliderIconSize = 40.0;
+    final double sliderCircleAvatarRadius = sliderHeight / 2.2;
     const double sliderTextFontSize = 22.0;
     const double titleFontSize = 36.0;
     const double subtitleFontSize = 22.0;
@@ -317,7 +336,7 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
     }
 
     return Scaffold(
-      backgroundColor: _currentBackgroundColor, // Animated background
+      backgroundColor: _currentBackgroundColor,
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16.0, 10.0, 16.0, 20.0),
@@ -325,7 +344,7 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
-              Column( /* Title and Subtitle */
+              Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   SizedBox(height: MediaQuery.of(context).size.height * 0.02),
@@ -344,7 +363,7 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
                 ],
               ),
 
-              Stack( /* Countdown Circle and Zoom Icon */
+              Stack(
                 alignment: Alignment.center,
                 children: [
                   SizedBox(
@@ -370,41 +389,41 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
                 ],
               ),
 
-              FadeTransition( // Wrap the Column of sliders with FadeTransition
+              FadeTransition(
                 opacity: _sliderOpacityAnimation,
                 child: IgnorePointer(
-                  ignoring: _hideSliders, // Disable interaction when fading out
+                  ignoring: _hideSliders,
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 8.0), // Spacing between sliders
+                        padding: const EdgeInsets.symmetric(vertical: 8.0),
                         child: SlideAction(
                           key: _slideOkKey,
                           text: "I'm OK",
                           textStyle: TextStyle(
                             color: AppTheme.accentColor, fontWeight: FontWeight.bold, fontSize: sliderTextFontSize, fontFamily: 'ProductSans',
                           ),
-                          outerColor: onAlertColor, // White track
-                          innerColor: AppTheme.accentColor.withAlpha(30), // Lighter thumb background
-                          sliderButtonIconPadding: 0, // Control padding with Container
+                          outerColor: onAlertColor,
+                          innerColor: AppTheme.accentColor.withAlpha(30),
+                          sliderButtonIconPadding: 0,
                           sliderButtonIcon: Container(
-                            margin: const EdgeInsets.all(6), // Margin around CircleAvatar inside thumb
+                            margin: const EdgeInsets.all(6),
                             child: CircleAvatar(
                               radius: sliderCircleAvatarRadius, backgroundColor: AppTheme.accentColor,
                               child: Icon(Icons.check, color: onAlertColor, size: sliderIconSize),
                             ),
                           ),
                           borderRadius: sliderHeight / 2, height: sliderHeight, elevation: 0, sliderRotate: false,
-                          submittedIcon: const SizedBox.shrink(), // Using custom central zoom
+                          submittedIcon: const SizedBox.shrink(),
                           onSubmit: () => _triggerActionSequence(
                             widget.onImOk, Icons.check_circle_outline, isOkAction: true,
                           ),
-                          enabled: _isTimerActive, // Disable if action already triggered
+                          enabled: _isTimerActive,
                         ),
                       ),
                       Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 8.0), // Spacing between sliders
+                        padding: const EdgeInsets.symmetric(vertical: 8.0),
                         child: SlideAction(
                           key: _slideEmergencyKey,
                           text: 'Call Emergency',
@@ -426,7 +445,7 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
                           onSubmit: () => _triggerActionSequence(
                             widget.onCallEmergency, Icons.phone_in_talk_outlined, isOkAction: false,
                           ),
-                          enabled: _isTimerActive, // Disable if action already triggered
+                          enabled: _isTimerActive,
                         ),
                       ),
                     ],
@@ -442,7 +461,8 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
   }
 }
 
-// --- CountdownPainter (remains unchanged, ensure it's in your file) ---
+
+// CountdownPainter (no changes needed)
 class CountdownPainter extends CustomPainter {
   final double progress;
   final Color backgroundColor;
@@ -492,8 +512,3 @@ class CountdownPainter extends CustomPainter {
         oldDelegate.strokeWidth != strokeWidth;
   }
 }
-
-// --- FeedbackType enum (if you use it with flutter_vibrate) ---
-// This might be defined in flutter_vibrate itself, or you can define a simple one.
-// For built-in HapticFeedback, specific methods are called.
-enum FeedbackType { light, medium, heavy, success, warning, error, selectionClick }
