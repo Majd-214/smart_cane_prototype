@@ -62,7 +62,7 @@ class _LoginScreenState extends State<LoginScreen> {
             children: <Widget>[
               // App Logo or Icon (Placeholder)
               Icon(
-                Icons.assist_walker, // Example icon, find a suitable one
+                Icons.elderly, // Example icon, find a suitable one
                 size: 100,
                 color: AppTheme.darkPrimaryColor,
               ),
@@ -90,7 +90,7 @@ class _LoginScreenState extends State<LoginScreen> {
               // Google Sign-In Button
               ElevatedButton.icon(
                 icon: Image.asset(
-                  'assets/google_logo.png', // You'll need to add a Google logo asset
+                  'assets/google_g.png', // You'll need to add a Google logo asset
                   height: 24,
                 ),
                 label: Text(
