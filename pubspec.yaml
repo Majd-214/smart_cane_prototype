@@ -41,6 +41,9 @@ dependencies:
   url_launcher: ^6.3.1 # Use the latest version
   google_fonts: ^6.2.1 # Use the latest version
   firebase_core: ^3.13.0 # Add this line (check pub.dev for the latest version if needed)
+  slide_to_act: ^2.0.2 # Button Sliding for Overlay
+  audioplayers: ^6.4.0
+  flutter_vibrate: ^1.3.0
 
 
 dev_dependencies:
@@ -71,6 +74,7 @@ flutter:
   #   - images/a_dot_ham.jpeg
   assets:
     - assets/
+    - assets/sounds/ # Specifically declare the sounds folder too for clarity
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
