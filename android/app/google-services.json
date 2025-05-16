@@ -12,7 +12,20 @@
           "package_name": "com.sept.learning_factory.smart_cane_prototype"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "563379077533-mjlppkquc55m9qb4thnh8muk7qk0iuj6.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.sept.learning_factory.smart_cane_prototype",
+            "certificate_hash": "b573f4b90d2157d297903d202b8bfb3511afb99f"
+          }
+        },
+        {
+          "client_id": "563379077533-po8384ic143bk4qk8ibkn1kbbbvbvvdb.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyDqyK9VvOmbLN-AeJdx8vVM7AwmqPBAAhg"
@@ -20,7 +33,19 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "563379077533-po8384ic143bk4qk8ibkn1kbbbvbvvdb.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "563379077533-lqbtnur2irh8m67qvb3va0ual69lru0d.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.sept.learningfactory.smartCanePrototype"
+              }
+            }
+          ]
         }
       }
     }
