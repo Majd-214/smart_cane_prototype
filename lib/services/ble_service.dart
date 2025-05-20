@@ -9,6 +9,7 @@ const String BATTERY_CHARACTERISTIC_UUID = "2A19";
 const String FALL_CHARACTERISTIC_UUID = "C712A5B2-2C13-4088-8D53-F7E3291B0155";
 const String CALIBRATION_CHARACTERISTIC_UUID = "E9A10B6B-8A65-4F56-82C3-6768F0EE38A1";
 const String SMART_CANE_DEVICE_NAME = "Smart Cane";
+const String CALIBRATION_STATUS_UUID = "494600C8-1693-4A3B-B380-FF1EC534959E";
 
 enum BleConnectionState {
   disconnected,
@@ -22,15 +23,20 @@ enum BleConnectionState {
   scanStopped,
 }
 
+enum CalibrationState {
+  idle,
+  inProgress,
+  success,
+  failed
+}
+
 class BleService {
-  // Singleton pattern
   static final BleService _instance = BleService._internal();
   factory BleService() {
     return _instance;
   }
   BleService._internal();
 
-  // Streams to broadcast BLE state changes
   final _connectionStateController = StreamController<BleConnectionState>.broadcast();
   Stream<BleConnectionState> get connectionStateStream => _connectionStateController.stream;
 
@@ -46,41 +52,36 @@ class BleService {
   final _connectedDeviceController = StreamController<BluetoothDevice?>.broadcast();
   Stream<BluetoothDevice?> get connectedDeviceStream => _connectedDeviceController.stream;
 
+  final _calibrationStatusController = StreamController<CalibrationState>.broadcast();
+  Stream<CalibrationState> get calibrationStatusStream => _calibrationStatusController.stream;
 
-  // Keep track of the current connection state internally
   BleConnectionState _currentConnectionState = BleConnectionState.disconnected;
-
-  // Currently connected device and its subscriptions
   BluetoothDevice? _connectedDevice;
   StreamSubscription<BluetoothConnectionState>? _connectionStateSubscription;
-  List<StreamSubscription> _characteristicValueSubscriptions = [];
+  List<StreamSubscription<List<int>>> _characteristicValueSubscriptions = []; // Corrected type
   StreamSubscription<bool>? _isScanningSubscription;
 
-
-  // Keep track of discovered characteristics
   BluetoothCharacteristic? _batteryCharacteristic;
   BluetoothCharacteristic? _fallCharacteristic;
   BluetoothCharacteristic? _calibrationCharacteristic;
+  BluetoothCharacteristic? _calibrationStatusCharacteristic; // CLASS MEMBER DECLARED HERE
 
-
-  // --- Initialization and Permissions ---
   Future<void> initialize() async {
     print("BleService Initializing...");
     await _requestPermissions();
 
     FlutterBluePlus.adapterState.listen((state) {
-      print("BLE Adapter State: $state");
+      print("BleService: BLE Adapter State: $state");
       if (state == BluetoothAdapterState.on) {
         if (_currentConnectionState == BleConnectionState.bluetoothOff || _currentConnectionState == BleConnectionState.unknown) {
           _updateConnectionState(BleConnectionState.disconnected);
         }
       } else if (state == BluetoothAdapterState.off) {
         _updateConnectionState(BleConnectionState.bluetoothOff);
-        disconnectFromDevice();
+        disconnectFromDevice(); // Attempt to clean up if BT is turned off
       } else if (state == BluetoothAdapterState.unavailable) {
         _updateConnectionState(BleConnectionState.unknown);
-      }
-      if (state == BluetoothAdapterState.unauthorized) {
+      } else if (state == BluetoothAdapterState.unauthorized) {
         _updateConnectionState(BleConnectionState.noPermissions);
       }
     });
@@ -90,9 +91,9 @@ class BleService {
     });
 
     _isScanningSubscription = FlutterBluePlus.isScanning.listen((scanning) {
-      print("isScanning state changed: $scanning");
+      print("BleService: isScanning state changed: $scanning");
       if (scanning) {
-        if (_currentConnectionState == BleConnectionState.disconnected || _currentConnectionState == BleConnectionState.scanStopped) {
+        if (_currentConnectionState == BleConnectionState.disconnected || _currentConnectionState == BleConnectionState.scanStopped || _currentConnectionState == BleConnectionState.unknown) {
           _updateConnectionState(BleConnectionState.scanning);
         }
       } else {
@@ -101,7 +102,6 @@ class BleService {
         }
       }
     });
-
     print("BleService Initialized.");
   }
 
@@ -109,383 +109,436 @@ class BleService {
     if (_currentConnectionState != state) {
       _currentConnectionState = state;
       _connectionStateController.add(state);
-      print("Connection State Updated: $state");
+      print("BleService: Connection State Updated: $state");
     }
   }
 
-
   Future<void> _requestPermissions() async {
-    print("Requesting BLE and Location Permissions...");
-    await Permission.bluetoothScan.request();
-    await Permission.bluetoothConnect.request();
-    await Permission.locationWhenInUse.request();
-    await Permission.locationAlways.request();
-    await Permission.phone.request();
-    await Permission.systemAlertWindow.request();
-    print("Permission requests finished.");
+    print("BleService: Requesting BLE and Location Permissions...");
+    Map<Permission, PermissionStatus> statuses = await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.locationWhenInUse, // Essential for BLE scanning on many Android versions
+      // Permission.locationAlways, // Only if background location is strictly needed by a feature
+      Permission.phone,            // For making calls
+      // Permission.systemAlertWindow, // If you plan to draw overlays from background
+    ].request();
+    statuses.forEach((permission, status) {
+      print("BleService: Permission ${permission.toString()} status: ${status.toString()}");
+    });
+    print("BleService: Permission requests finished.");
   }
 
-  // --- Scanning ---
   Future<void> startScan({Duration timeout = const Duration(seconds: 10)}) async {
-    if (FlutterBluePlus.isScanningNow || _currentConnectionState == BleConnectionState.connecting || _currentConnectionState == BleConnectionState.connected || _currentConnectionState == BleConnectionState.disconnecting) {
-      print("Already scanning, connecting, connected, or disconnecting. Ignoring start scan request.");
+    if (FlutterBluePlus.isScanningNow) {
+      print("BleService: Already scanning. Ignoring start scan request.");
+      return;
+    }
+    if (_currentConnectionState == BleConnectionState.connecting || _currentConnectionState == BleConnectionState.connected) {
+      print("BleService: Already connecting or connected. Scan not initiated.");
       return;
     }
 
-    print("Starting BLE scan...");
-    _scanResultsController.add([]);
+
+    print("BleService: Starting BLE scan...");
+    _scanResultsController.add([]); // Clear previous results
+
+    // Check adapter state
+    final adapterState = await FlutterBluePlus.adapterState.first;
+    if (adapterState != BluetoothAdapterState.on) {
+      print("BleService: Cannot start scan: Bluetooth adapter is ${adapterState.name}.");
+      _updateConnectionState(adapterState == BluetoothAdapterState.off
+          ? BleConnectionState.bluetoothOff
+          : BleConnectionState.unknown);
+      return;
+    }
+
+    // Check permissions
+    if (!await Permission.bluetoothScan.isGranted ||
+        !await Permission.bluetoothConnect.isGranted ||
+        !await Permission.locationWhenInUse.isGranted) { // Or locationAlways if that's your target
+      print("BleService: Cannot start scan: Missing required Bluetooth or Location permissions.");
+      _updateConnectionState(BleConnectionState.noPermissions);
+      await _requestPermissions(); // Try requesting again
+      return;
+    }
     _updateConnectionState(BleConnectionState.scanning);
     try {
-      final adapterState = await FlutterBluePlus.adapterState.first;
-      if (adapterState != BluetoothAdapterState.on) {
-        print("Cannot start scan: Bluetooth adapter is ${adapterState.name}.");
-        if (adapterState == BluetoothAdapterState.off) _updateConnectionState(BleConnectionState.bluetoothOff);
-        if (adapterState == BluetoothAdapterState.unauthorized) _updateConnectionState(BleConnectionState.noPermissions);
-        _updateConnectionState(BleConnectionState.scanStopped);
-        return;
-      }
-
-      final locationStatus = await Permission.locationWhenInUse.status;
-      final bluetoothScanStatus = await Permission.bluetoothScan.status;
-      if (!locationStatus.isGranted || !bluetoothScanStatus.isGranted) {
-        print("Cannot start scan: Missing Location or Bluetooth Scan permissions.");
-        _updateConnectionState(BleConnectionState.noPermissions);
-        await _requestPermissions();
-        _updateConnectionState(BleConnectionState.scanStopped);
-        return;
-      }
-
       await FlutterBluePlus.startScan(timeout: timeout);
-      print("BLE scan started.");
+      print("BleService: BLE scan started.");
     } catch (e) {
-      print("Error starting scan: $e");
-      _updateConnectionState(BleConnectionState.scanStopped);
+      print("BleService: Error starting scan: $e");
+      _updateConnectionState(BleConnectionState.scanStopped); // Or unknown/error
     }
   }
 
   Future<void> stopScan() async {
     if (FlutterBluePlus.isScanningNow) {
-      print("Stopping BLE scan...");
+      print("BleService: Stopping BLE scan...");
       try {
         await FlutterBluePlus.stopScan();
-        print("BLE scan stopped.");
+        print("BleService: BLE scan stopped.");
+        // State update to scanStopped is handled by the isScanning listener
       } catch (e) {
-        print("Error stopping scan: $e");
-        _updateConnectionState(BleConnectionState.scanStopped);
+        print("BleService: Error stopping scan: $e");
+        _updateConnectionState(BleConnectionState.scanStopped); // Or unknown/error
       }
     } else {
-      print("No active BLE scan to stop.");
-      _updateConnectionState(BleConnectionState.scanStopped);
+      print("BleService: No active BLE scan to stop.");
+      if (_currentConnectionState == BleConnectionState.scanning) {
+        _updateConnectionState(BleConnectionState.scanStopped);
+      }
     }
   }
 
-  // --- Connection ---
   Future<void> connectToDevice(BluetoothDevice device) async {
-    if (_currentConnectionState == BleConnectionState.connecting || _currentConnectionState == BleConnectionState.connected || _currentConnectionState == BleConnectionState.disconnecting) {
-      print("Already in connection process or connected. Ignoring connect request.");
+    if (_currentConnectionState == BleConnectionState.connected && _connectedDevice?.remoteId == device.remoteId) {
+      print("BleService: Already connected to ${device.platformName}. Ignoring connect request.");
+      return;
+    }
+    if (_currentConnectionState == BleConnectionState.connecting) {
+      print("BleService: Already attempting to connect. Ignoring connect request.");
       return;
     }
 
-    print("Attempting to connect to ${device.platformName}...");
+    print("BleService: Attempting to connect to ${device.platformName} (${device.remoteId})...");
     _updateConnectionState(BleConnectionState.connecting);
 
     try {
-      await stopScan();
+      if (FlutterBluePlus.isScanningNow) {
+        await stopScan();
+      }
 
-      _connectionStateSubscription?.cancel();
-      _connectionStateSubscription = device.connectionState.listen((state) {
-        print("Device ${device.platformName} connection state: $state");
-        if (state == BluetoothConnectionState.disconnected) {
-          _connectedDevice = null;
-          _connectedDeviceController.add(null);
-          _updateConnectionState(BleConnectionState.disconnected);
-          print("Disconnected from ${device.platformName}");
-          _clearCharacteristicReferences();
-          _cancelCharacteristicValueSubscriptions();
+      _connectionStateSubscription?.cancel(); // Cancel any previous device's connection state sub
+      _connectionStateSubscription = device.connectionState.listen(
+              (BluetoothConnectionState state) {
+            print("BleService: Device ${device.platformName} connection state changed: $state");
+            if (state == BluetoothConnectionState.disconnected) {
+              if (_connectedDevice?.remoteId == device.remoteId || _connectedDevice == null) {
+                _clearCharacteristicReferencesAndSubscriptions();
+                _connectedDevice = null;
+                _connectedDeviceController.add(null);
+                _updateConnectionState(BleConnectionState.disconnected);
+                print("BleService: Disconnected from ${device.platformName}");
+              }
+            } else if (state == BluetoothConnectionState.connected) {
+              _connectedDevice = device;
+              _connectedDeviceController.add(device);
+              _updateConnectionState(BleConnectionState.connected);
+              print("BleService: Successfully connected to ${device.platformName}");
+              _discoverServices(device);
+            }
+          },
+          onError: (error) {
+            print("BleService: Error in device connection state stream for ${device.platformName}: $error");
+            _updateConnectionState(BleConnectionState.disconnected);
+          }
+      );
 
-        } else if (state == BluetoothConnectionState.connected) {
-          _updateConnectionState(BleConnectionState.connected);
-          print("Successfully connected to ${device.platformName}");
-          _connectedDevice = device;
-          _connectedDeviceController.add(device);
-          _discoverServices(device);
-        }
-      });
-
-      await device.connect(timeout: const Duration(seconds: 15));
-      // State update to 'connected' is handled by the listener.
-
+      await device.connect(timeout: const Duration(seconds: 15), autoConnect: false);
+      // Connection state listener will handle transition to 'connected' and service discovery
     } catch (e) {
-      print("Error connecting to device: $e");
-      _updateConnectionState(BleConnectionState.disconnected);
-      _connectedDevice = null;
-      _connectedDeviceController.add(null);
-      _clearCharacteristicReferences();
-      _connectionStateSubscription?.cancel();
+      print("BleService: Error connecting to device ${device.platformName}: $e");
+      _connectionStateSubscription?.cancel(); // Clean up listener on error
+      _updateConnectionState(BleConnectionState.disconnected); // Or a specific error state
     }
   }
 
   Future<void> disconnectFromDevice() async {
-    if (_currentConnectionState == BleConnectionState.disconnected || _connectedDevice == null || _currentConnectionState == BleConnectionState.disconnecting) {
-      print("Not connected, device is null, or already disconnecting. Ignoring disconnect request.");
-      if (_currentConnectionState != BleConnectionState.disconnected && _currentConnectionState != BleConnectionState.scanStopped && _currentConnectionState != BleConnectionState.scanning) {
+    if (_connectedDevice == null) {
+      print("BleService: Not connected to any device. Ignoring disconnect request.");
+      if (_currentConnectionState != BleConnectionState.disconnected && _currentConnectionState != BleConnectionState.scanStopped) {
         _updateConnectionState(BleConnectionState.disconnected);
       }
       return;
     }
+    if (_currentConnectionState == BleConnectionState.disconnecting) {
+      print("BleService: Already disconnecting. Ignoring disconnect request.");
+      return;
+    }
 
-    print("Attempting to disconnect from ${_connectedDevice!.platformName}...");
+
+    print("BleService: Attempting to disconnect from ${_connectedDevice!.platformName}...");
     _updateConnectionState(BleConnectionState.disconnecting);
 
     try {
-      _cancelCharacteristicValueSubscriptions();
-      _clearCharacteristicReferences();
-      // Don't cancel the connectionStateSubscription here. Let it receive the disconnected event.
-
-      _connectedDeviceController.add(null);
-
       await _connectedDevice!.disconnect();
-      // State update to 'disconnected' is handled by the connectionState listener
-
+      // The device.connectionState listener should handle the state update to disconnected
+      print("BleService: Disconnect command sent to ${_connectedDevice!.platformName}.");
     } catch (e) {
-      print("Error disconnecting from device: $e");
-      _updateConnectionState(BleConnectionState.connected);
-      _connectedDeviceController.add(_connectedDevice);
-    } finally {
-      // Ensure device reference is cleared regardless of success or failure
-      _connectedDevice = null;
-      // Add a small delay before broadcasting null in finally to allow listener to fire first
-      Future.delayed(const Duration(milliseconds: 100), () {
-        // Only broadcast null if we haven't transitioned to disconnected already
-        if (_currentConnectionState != BleConnectionState.disconnected) {
-          _connectedDeviceController.add(null);
-          _updateConnectionState(BleConnectionState.disconnected); // Ensure state is disconnected
-        }
-      });
+      print("BleService: Error disconnecting from device: $e");
+      // If disconnect fails, force state back to connected to allow retry, or to disconnected if appropriate
+      if (_connectedDevice != null && _connectedDevice!.isConnected) {
+        _updateConnectionState(BleConnectionState.connected); // Still connected
+      } else {
+        _clearCharacteristicReferencesAndSubscriptions();
+        _connectedDevice = null;
+        _connectedDeviceController.add(null);
+        _updateConnectionState(BleConnectionState.disconnected);
+      }
     }
   }
 
-  void _clearCharacteristicReferences() {
+  void _clearCharacteristicReferencesAndSubscriptions() {
     _batteryCharacteristic = null;
     _fallCharacteristic = null;
     _calibrationCharacteristic = null;
-    print("Characteristic references cleared.");
-  }
+    _calibrationStatusCharacteristic = null; // CLEAR THIS TOO
+    print("BleService: Characteristic references cleared.");
 
-  void _cancelCharacteristicValueSubscriptions() {
     for (var sub in _characteristicValueSubscriptions) {
       sub.cancel();
     }
     _characteristicValueSubscriptions.clear();
-    print("Characteristic value subscriptions cancelled.");
+    print("BleService: Characteristic value subscriptions cancelled.");
   }
 
-
-  // --- Service and Characteristic Discovery ---
   Future<void> _discoverServices(BluetoothDevice device) async {
-    print("Discovering services for ${device.platformName}...");
-    _clearCharacteristicReferences();
-    _cancelCharacteristicValueSubscriptions();
+    print("BleService: Discovering services for ${device.platformName}...");
+    // Clear old ones before rediscovering, especially if reconnecting without full disconnect
+    _clearCharacteristicReferencesAndSubscriptions();
 
+
+    List<BluetoothService> services;
     try {
-      List<BluetoothService> services = await device.discoverServices();
-      print("Discovered ${services.length} services.");
+      services = await device.discoverServices();
+      print("BleService: Discovered ${services.length} services for ${device.platformName}.");
+    } catch (e) {
+      print("BleService: Error discovering services for ${device.platformName}: $e");
+      // Consider disconnecting or setting an error state
+      disconnectFromDevice();
+      return;
+    }
 
-      bool smartCaneServiceFound = false;
+    bool smartCaneServiceFound = false;
+    for (BluetoothService service in services) {
+      // print("BleService DEBUG: Service UUID: ${service.uuid.str.toUpperCase()}");
+      if (service.uuid.str.toUpperCase() == SMART_CANE_SERVICE_UUID.toUpperCase()) {
+        smartCaneServiceFound = true;
+        print("BleService: Found Smart Cane Service! (${service.uuid.str})");
+        for (BluetoothCharacteristic characteristic in service.characteristics) {
+          final charUuidUpper = characteristic.uuid.str.toUpperCase();
+          print("BleService:  Characteristic UUID: $charUuidUpper (Notify: ${characteristic.properties.notify})");
 
-      for (BluetoothService service in services) {
-        print("  Service UUID: ${service.uuid.str.toUpperCase()}");
-        if (service.uuid.str.toUpperCase() == SMART_CANE_SERVICE_UUID.toUpperCase()) {
-          smartCaneServiceFound = true;
-          print("    Found Smart Cane Service!");
-          for (BluetoothCharacteristic characteristic in service.characteristics) {
-            print("    Characteristic UUID: ${characteristic.uuid.str.toUpperCase()}");
-            if (characteristic.uuid.str.toUpperCase() == BATTERY_CHARACTERISTIC_UUID.toUpperCase()) {
-              _batteryCharacteristic = characteristic;
-              print("      Found Battery Characteristic.");
-              if (characteristic.properties.notify) {
-                _subscribeToCharacteristic(characteristic, _batteryLevelController);
-              } else {
-                print("Warning: Battery characteristic does not support notifications.");
-              }
-              if (characteristic.properties.read) {
-                readBatteryLevel();
-              }
-            } else if (characteristic.uuid.str.toUpperCase() == FALL_CHARACTERISTIC_UUID.toUpperCase()) {
-              _fallCharacteristic = characteristic;
-              print("      Found Fall Characteristic.");
-              if (characteristic.properties.notify) {
-                _subscribeToCharacteristic(characteristic, _fallDetectedController);
-              } else {
-                print("Warning: Fall characteristic does not support notifications.");
-              }
-            } else if (characteristic.uuid.str.toUpperCase() == CALIBRATION_CHARACTERISTIC_UUID.toUpperCase()) {
-              _calibrationCharacteristic = characteristic;
-              print("      Found Calibration Characteristic.");
-              if (!characteristic.properties.write && !characteristic.properties.writeWithoutResponse) {
-                print("Warning: Calibration characteristic does not support writing.");
-              }
+          if (charUuidUpper == BATTERY_CHARACTERISTIC_UUID) {
+            _batteryCharacteristic = characteristic;
+            print("BleService:   Found Battery Characteristic.");
+            if (characteristic.properties.read) await readBatteryLevel(); // Initial read
+            if (characteristic.properties.notify) await _subscribeToChar(characteristic, _batteryLevelController);
+          } else if (charUuidUpper == FALL_CHARACTERISTIC_UUID) {
+            _fallCharacteristic = characteristic;
+            print("BleService:   Found Fall Characteristic.");
+            if (characteristic.properties.notify) await _subscribeToChar(characteristic, _fallDetectedController);
+          } else if (charUuidUpper == CALIBRATION_CHARACTERISTIC_UUID) {
+            _calibrationCharacteristic = characteristic;
+            print("BleService:   Found Calibration Command Characteristic. Write: ${characteristic.properties.write}, WriteNoResponse: ${characteristic.properties.writeWithoutResponse}");
+          } else if (charUuidUpper == CALIBRATION_STATUS_UUID) {
+            _calibrationStatusCharacteristic = characteristic; // ASSIGN CLASS MEMBER
+            print("BleService:   Found Calibration Status Characteristic.");
+            if (characteristic.properties.notify) {
+              print("BleService DEBUG: Calibration Status Characteristic SUPPORTS notify. Attempting to subscribe...");
+              await _subscribeToChar(characteristic, _calibrationStatusController);
+            } else {
+              print("BleService DEBUG ERROR: Calibration Status characteristic DOES NOT support notifications!");
             }
           }
         }
       }
+    }
 
-      if (!smartCaneServiceFound) {
-        print("Error: Smart Cane Service not found on the device.");
-        disconnectFromDevice();
-      } else if (_batteryCharacteristic == null || _fallCharacteristic == null || _calibrationCharacteristic == null) {
-        print("Warning: Could not find all required characteristics on the Smart Cane Service. Proceeding with available characteristics.");
-      } else {
-        print("All required Smart Cane characteristics found.");
-      }
-
-
-    } catch (e) {
-      print("Error discovering services: $e");
+    if (!smartCaneServiceFound) {
+      print("BleService ERROR: Smart Cane Service not found on ${device.platformName}. Disconnecting.");
       disconnectFromDevice();
+    } else if (_batteryCharacteristic == null || _fallCharacteristic == null || _calibrationCharacteristic == null || _calibrationStatusCharacteristic == null) {
+      print("BleService WARNING: Not all required Smart Cane characteristics were found. Some features may not work.");
+      // Decide if this is a critical failure worthy of disconnect
+    } else {
+      print("BleService: All required Smart Cane characteristics identified.");
+      _calibrationStatusController.add(CalibrationState.idle); // Set initial state after successful discovery
     }
   }
 
-
-  // --- Reading and Writing ---
   Future<int?> readBatteryLevel() async {
-    if (_batteryCharacteristic != null && _connectedDevice != null && _batteryCharacteristic!.properties.read) {
-      print("Reading battery level...");
-      try {
-        List<int> value = await _batteryCharacteristic!.read();
-        if (value.isNotEmpty) {
-          int batteryLevel = value[0];
-          if (batteryLevel >= 0 && batteryLevel <= 100) {
-            print("  Read Battery Level: $batteryLevel%");
-            _batteryLevelController.add(batteryLevel);
-            return batteryLevel;
-          } else {
-            print("  Received unexpected battery value: ${value[0]}");
-          }
+    if (_batteryCharacteristic == null || !_connectedDeviceAndCharProps(_batteryCharacteristic!, read: true)) {
+      print("BleService: Cannot read battery: Characteristic not available or doesn't support read.");
+      return null;
+    }
+    print("BleService: Reading battery level...");
+    try {
+      List<int> value = await _batteryCharacteristic!.read();
+      if (value.isNotEmpty) {
+        int batteryLevel = value[0];
+        if (batteryLevel >= 0 && batteryLevel <= 100) {
+          print("BleService: Read Battery Level: $batteryLevel%");
+          _batteryLevelController.add(batteryLevel);
+          return batteryLevel;
         } else {
-          print("  Received empty value from Battery Characteristic.");
+          print("BleService: Received unexpected battery value: ${value[0]}");
         }
-      } catch (e) {
-        print("Error reading battery level: $e");
+      } else {
+        print("BleService: Received empty value from Battery Characteristic read.");
       }
-    } else {
-      print("Cannot read battery level: Not connected, characteristic not found, or does not support reading.");
+    } catch (e) {
+      print("BleService: Error reading battery level: $e");
     }
     return null;
   }
 
+  // Subscribe to Characteristics:
+  Future<void> _subscribeToChar(BluetoothCharacteristic characteristic, StreamController controller) async {
+    if (!_connectedDeviceAndCharProps(characteristic, notify: true)) {
+      print("BleService: Cannot subscribe to ${characteristic.uuid.str}: Device not connected or char does not support notify.");
+      // If it's the calibration status controller, emit idle or failed as it won't work
+      if (controller == _calibrationStatusController) {
+        _calibrationStatusController.add(CalibrationState.idle); // Or failed
+      }
+      return;
+    }
 
-  // --- Notifications (Subscriptions) ---
-  void _subscribeToCharacteristic(BluetoothCharacteristic characteristic, StreamController controller) {
-    print("Subscribing to notifications for ${characteristic.uuid.str.toUpperCase()}...");
+    final charUuidUpper = characteristic.uuid.str.toUpperCase();
+    print("BleService DEBUG: Attempting to setNotifyValue(true) for UUID: $charUuidUpper");
+
     try {
-      characteristic.setNotifyValue(true).catchError((e) {
-        print("Error setting notify value for ${characteristic.uuid.str.toUpperCase()}: $e");
-      });
+      await characteristic.setNotifyValue(true);
+      print("BleService DEBUG: Successfully called setNotifyValue(true) for UUID: $charUuidUpper");
 
-      final subscription = characteristic.value.listen((value) {
-        if (characteristic.uuid.str.toUpperCase() == BATTERY_CHARACTERISTIC_UUID.toUpperCase()) {
-          if (value.isNotEmpty) {
-            int batteryLevel = value[0];
-            if (batteryLevel >= 0 && batteryLevel <= 100) {
-              print("  Parsed Battery Level: $batteryLevel%");
-              controller.add(batteryLevel);
-            } else {
-              print("  Received unexpected battery value: ${value[0]}");
-            }
-          } else {
-            print("  Received empty value from Battery Characteristic.");
-          }
-        } else if (characteristic.uuid.str.toUpperCase() == FALL_CHARACTERISTIC_UUID.toUpperCase()) {
-          if (value.isNotEmpty) {
-            bool fallDetected = value[0] == 1;
-            print("  Parsed Fall Detected: $fallDetected");
-            controller.add(fallDetected);
+      final StreamSubscription<List<int>> subscription = characteristic.value.listen(
+              (value) {
+            // General log for any notification
+            // print("BleService DEBUG: NOTIFICATION RECEIVED for $charUuidUpper! Raw data: $value");
 
-            if (fallDetected) {
-              print("FALL EVENT DETECTED! Triggering overlay logic.");
+            if (charUuidUpper == BATTERY_CHARACTERISTIC_UUID) {
+              if (value.isNotEmpty) {
+                // ... battery logic ...
+                (controller as StreamController<int?>).add(value[0]);
+              } else {
+                print("BleService: Received empty notification from Battery Characteristic.");
+              }
+            } else if (charUuidUpper == FALL_CHARACTERISTIC_UUID) {
+              if (value.isNotEmpty) {
+                // ... fall logic ...
+                (controller as StreamController<bool>).add(value[0] == 1);
+              } else {
+                print("BleService: Received empty notification from Fall Characteristic.");
+              }
+            } else if (charUuidUpper == CALIBRATION_STATUS_UUID) {
+              // Specific logging for calibration status
+              print("BleService DEBUG: CALIBRATION STATUS NOTIFICATION for $charUuidUpper. Raw data: $value");
+              if (value.isNotEmpty) {
+                CalibrationState calibState;
+                print("BleService DEBUG: Parsing value[0]: ${value[0]} for $charUuidUpper (Calibration Status)");
+                switch (value[0]) {
+                  case 0: calibState = CalibrationState.failed; break;
+                  case 1: calibState = CalibrationState.success; break;
+                  case 2: calibState = CalibrationState.inProgress; break;
+                  default:
+                    print("BleService WARNING: Received UNKNOWN calibration status data value: ${value[0]} for $charUuidUpper. Setting to idle.");
+                    calibState = CalibrationState.idle;
+                    break;
+                }
+                print("BleService DEBUG: Parsed Calibration Status: $calibState for $charUuidUpper");
+                (controller as StreamController<CalibrationState>).add(calibState);
+              } else {
+                // IGNORE EMPTY PACKETS for calibration status state updates.
+                // The 'idle' state is set by _discoverServices. This empty packet should not change it to 'failed'.
+                print("BleService DEBUG: Calibration Status NOTIFICATION was EMPTY for $charUuidUpper. IGNORING for state update.");
+              }
             }
-          } else {
-            print("  Received empty value from Fall Characteristic.");
-          }
-        }
-      },
-          onError: (e) {
-            print("Error receiving data from ${characteristic.uuid.str.toUpperCase()}: $e");
+          },
+          onError: (error) {
+            print("BleService DEBUG ERROR: Error in characteristic value stream for $charUuidUpper: $error");
+            if (controller == _calibrationStatusController) {
+              (controller as StreamController<CalibrationState>).add(CalibrationState.failed); // Stream error could mean failure
+            }
           },
           onDone: () {
-            print("Stream for ${characteristic.uuid.str.toUpperCase()} is done.");
+            print("BleService DEBUG: Characteristic value stream DONE for $charUuidUpper.");
+            if (controller == _calibrationStatusController) {
+              (controller as StreamController<CalibrationState>).add(CalibrationState.idle); // Stream closed, go to idle
+            }
           }
       );
-
       _characteristicValueSubscriptions.add(subscription);
+      print("BleService DEBUG: Added subscription to _characteristicValueSubscriptions for $charUuidUpper");
     } catch (e) {
-      print("Error setting up subscription for ${characteristic.uuid.str.toUpperCase()}: $e");
+      print("BleService DEBUG ERROR: Failed to setNotifyValue or listen for $charUuidUpper: $e");
+      if (controller == _calibrationStatusController) {
+        (controller as StreamController<CalibrationState>).add(CalibrationState.failed); // If cannot subscribe, it's a failure for this feature
+      }
     }
   }
 
-  // --- Public Methods to interact with the Service ---
+  bool _connectedDeviceAndCharProps(BluetoothCharacteristic char, {bool read = false, bool write = false, bool notify = false}) {
+    if (_connectedDevice == null || !_connectedDevice!.isConnected) return false;
+    if (read && !char.properties.read) return false;
+    if (write && !(char.properties.write || char.properties.writeWithoutResponse)) return false;
+    if (notify && !(char.properties.notify || char.properties.indicate)) return false;
+    return true;
+  }
+
+
   BleConnectionState getCurrentConnectionState() {
     return _currentConnectionState;
   }
 
-  void startBleScan() {
-    startScan();
-  }
-
-  void connectToScannedDevice(BluetoothDevice device) {
-    connectToDevice(device);
-  }
-
-  bool disconnectCurrentDevice() {
-    return disconnectFromDevice() != null;
-  }
-
-  void resetFallDetectedState() {
-    print("Service: Resetting fall detected state.");
-    _fallDetectedController.add(false); // Emit false to update UI
-    // TODO: Implement sending a reset command to the ESP32 if needed/possible
-  }
-
-
   Future<void> sendCalibrationCommand() async {
-    if (_calibrationCharacteristic != null && _connectedDevice != null && (_calibrationCharacteristic!.properties.write || _calibrationCharacteristic!.properties.writeWithoutResponse)) {
-      print("Sending calibration command...");
-      try {
-        await _calibrationCharacteristic!.write([1], withoutResponse: _calibrationCharacteristic!.properties.writeWithoutResponse);
-        print("Calibration command sent.");
-      } catch (e) {
-        print("Error sending calibration command: $e");
-      }
-    } else {
-      print("Cannot send calibration command: Not connected or calibration characteristic not found or does not support writing.");
+    if (_calibrationCharacteristic == null || !_connectedDeviceAndCharProps(_calibrationCharacteristic!, write: true)) {
+      print("BleService: Cannot send calibration command: Not connected, characteristic not found, or does not support writing.");
+      return;
+    }
+    print("BleService: Sending calibration command ([1])...");
+    try {
+      // Determine if writeWithoutResponse is preferred or available
+      bool withoutResponse = _calibrationCharacteristic!.properties.writeWithoutResponse;
+      await _calibrationCharacteristic!.write([1], withoutResponse: withoutResponse);
+      print("BleService: Calibration command sent.");
+      // No longer setting _calibrationStatusController to inProgress here,
+      // as the ESP32 will send a notification for that.
+    } catch (e) {
+      print("BleService: Error sending calibration command: $e");
+      _calibrationStatusController.add(CalibrationState.failed); // Notify UI of failure to send
     }
   }
 
   Future<void> makePhoneCall(String phoneNumber) async {
-    final Uri launchUri = Uri(
-      scheme: 'tel',
-      path: phoneNumber,
-    );
+    final Uri launchUri = Uri(scheme: 'tel', path: phoneNumber);
     try {
-      await launchUrl(launchUri);
-      print("Attempting to call: $phoneNumber");
+      if (await canLaunchUrl(launchUri)) {
+        await launchUrl(launchUri);
+        print("BleService: Attempting to open dialer for: $phoneNumber");
+      } else {
+        print("BleService: Could not launch dialer for $phoneNumber");
+      }
     } catch (e) {
-      print("Error launching phone call: $e");
+      print("BleService: Error launching phone call: $e");
     }
+  }
+
+  void resetFallDetectedStateLocally() {
+    print("BleService: Resetting fall detected state locally in app.");
+    _fallDetectedController.add(false);
   }
 
   void dispose() {
     print("BleService Disposing...");
-    _cancelCharacteristicValueSubscriptions();
     _connectionStateSubscription?.cancel();
     _isScanningSubscription?.cancel();
-    disconnectFromDevice();
+    _clearCharacteristicReferencesAndSubscriptions(); // Cancels char value subs
+
+    // Attempt to disconnect if connected
+    if (_connectedDevice != null && _connectedDevice!.isConnected) {
+      print("BleService: Disconnecting from device during dispose...");
+      _connectedDevice!.disconnect().catchError((e) {
+        print("BleService: Error during disconnect in dispose: $e");
+      });
+    }
+
     _connectionStateController.close();
     _scanResultsController.close();
     _batteryLevelController.close();
     _fallDetectedController.close();
     _connectedDeviceController.close();
+    _calibrationStatusController.close();
     print("BleService Disposed.");
   }
 }
