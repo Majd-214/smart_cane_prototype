@@ -2,10 +2,11 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // For HapticFeedback
+import 'package:flutter/services.dart';
 import 'package:smart_cane_prototype/utils/app_theme.dart';
 import 'package:slide_to_act/slide_to_act.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter_vibrate/flutter_vibrate.dart'; // Using flutter_vibrate
 
 class FallDetectionOverlay extends StatefulWidget {
   final VoidCallback onImOk;
@@ -16,7 +17,7 @@ class FallDetectionOverlay extends StatefulWidget {
     super.key,
     required this.onImOk,
     required this.onCallEmergency,
-    this.initialCountdownSeconds = 30,
+    this.initialCountdownSeconds = 30, // Default from your existing code
   });
 
   @override
@@ -45,7 +46,7 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
 
   late AnimationController _bgColorAnimationController;
   late Animation<Color?> _bgColorAnimation;
-  Color _currentBackgroundColor = AppTheme.warningColor;
+  Color _currentBackgroundColor = AppTheme.errorColor; // Start Yellow
 
   late AnimationController _sliderFadeController;
   late Animation<double> _sliderOpacityAnimation;
@@ -55,12 +56,13 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
   bool _hideCountdownNumber = false;
 
   final AudioPlayer _audioPlayer = AudioPlayer();
-  StreamSubscription? _playerStateSubscription; // To listen to player state
+  StreamSubscription? _playerStateSubscription;
   bool _alarmSoundPlaying = false;
+  bool _canVibrateDevice = false; // For flutter_vibrate
 
-
-  final Duration _rushProgressDuration = const Duration(milliseconds: 600);
-  final Duration _zoomIconDuration = const Duration(milliseconds: 700);
+  // Durations
+  final Duration _rushProgressDuration = const Duration(milliseconds: 400);
+  final Duration _zoomIconDuration = const Duration(milliseconds: 500);
   final Duration _bgColorChangeDuration = const Duration(milliseconds: 400);
   final Duration _numberFadeDuration = const Duration(milliseconds: 250);
   final Duration _sliderFadeDuration = const Duration(milliseconds: 200);
@@ -69,9 +71,9 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
   void initState() {
     super.initState();
     _remainingSeconds = widget.initialCountdownSeconds;
-    _currentBackgroundColor = AppTheme.warningColor;
+    _currentBackgroundColor = AppTheme.errorColor;
 
-    // --- Animation Controllers Initialization (same as before) ---
+    // Animation Controllers Initialization (copied from your provided file)
     _progressAnimationController = AnimationController(
       vsync: this, duration: Duration(seconds: widget.initialCountdownSeconds),
     )..addListener(() {
@@ -115,59 +117,65 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
     _sliderOpacityAnimation = Tween<double>(begin: 1.0, end: 0.0).animate(
         CurvedAnimation(parent: _sliderFadeController, curve: Curves.easeOut)
     );
-    // --- End Animation Controllers Initialization ---
 
-    _setupAudioPlayer(); // Setup audio player and listeners
-    _initHapticsAndPlaySound(); // Trigger initial haptics and sound
+    _setupAudioAndHaptics();
 
     _progressAnimationController.forward();
     _startSecondUpdaterTimer();
   }
 
-  Future<void> _setupAudioPlayer() async {
-    // Listen to player state changes for debugging
+  Future<void> _setupAudioAndHaptics() async {
+    print("FallDetectionOverlay: Setting up Audio and Haptics.");
+
+    // Haptics setup (flutter_vibrate)
+    bool? canVibrate = await Vibrate.canVibrate;
+    if (mounted) {
+      _canVibrateDevice = canVibrate ?? false;
+      if (_canVibrateDevice) {
+        Vibrate.feedback(FeedbackType.error); // Stronger initial feedback
+        print("FallDetectionOverlay: Initial ERROR haptic triggered (flutter_vibrate).");
+      } else {
+        HapticFeedback.heavyImpact(); // Fallback
+        print("FallDetectionOverlay: Initial HEAVY haptic triggered (built-in fallback).");
+      }
+    }
+
     _playerStateSubscription = _audioPlayer.onPlayerStateChanged.listen((PlayerState s) {
       print('FallDetectionOverlay: AudioPlayer current state: $s');
-      if (s == PlayerState.completed && _alarmSoundPlaying) {
-        // If it completed and wasn't stopped intentionally, and loop is desired, play again.
-        // Note: setReleaseMode(ReleaseMode.loop) should handle this, but this is a fallback.
-        // Be careful with this manual re-play if ReleaseMode.loop is also active.
-        // For now, relying on ReleaseMode.loop.
-      }
-      if (s == PlayerState.stopped || s == PlayerState.completed || s == PlayerState.disposed) {
-        // If it stopped for any reason other than pause, mark as not playing.
-        // This helps ensure _playAlarmSound can be called again if needed.
-        // However, _stopAlarmSound should be the primary way to set _alarmSoundPlaying to false.
-        // if (_alarmSoundPlaying && s != PlayerState.paused) {
-        //   _alarmSoundPlaying = false;
-        // }
-      }
+      // Loop manually if ReleaseMode.loop is not perfectly reliable OR sound is very short
+      // if (s == PlayerState.completed && _alarmSoundPlaying && _isTimerActive) {
+      //   print('FallDetectionOverlay: Alarm sound completed, attempting to loop.');
+      //   _audioPlayer.seek(Duration.zero); // Rewind to start
+      //   _audioPlayer.resume(); // Play again
+      // }
     });
-
-    _audioPlayer.onLog.listen((msg) { // Listen to logs from audioplayers
+    _audioPlayer.onLog.listen((msg) {
       print('FallDetectionOverlay: audioplayers log: $msg');
     });
 
-    // Set AudioContext for Android to use ALARM stream
+    // CRITICAL: Configure AudioContext for Android ALARM stream
+    // This tells Android to treat this audio as an alarm.
     await _audioPlayer.setAudioContext(AudioContext(
       android: AudioContextAndroid(
-        isSpeakerphoneOn: true,
-        stayAwake: true,
-        contentType: AndroidContentType.sonification,
-        usageType: AndroidUsageType.alarm, // CRITICAL
-        audioFocus: AndroidAudioFocus.gain, // Try full gain instead of gainTransientMayDuck
+        isSpeakerphoneOn: true,       // Try to force speaker
+        stayAwake: true,              // Keep CPU awake during playback
+        contentType: AndroidContentType.sonification, // Appropriate for alerts
+        usageType: AndroidUsageType.alarm, // **THIS IS THE KEY FOR ALARM BEHAVIOR**
+        audioFocus: AndroidAudioFocus.gain, // Request and keep audio focus (gain, gainTransient, gainTransientMayDuck)
       ),
-      // iOS: AudioContextIOS(category: AVAudioSessionCategory.playback, options: []), // Minimal for iOS as per request
+      // iOS: For iOS, playback category needs to be set for similar behavior,
+      // but user requested Android-only focus for this fix.
+      // AVAudioSessionCategory.playback with appropriate options is typical.
+      // iOS: AudioContextIOS(category: AVAudioSessionCategory.playback, options: [
+      //   // AVAudioSessionOptions.mixWithOthers, // Remove if alarm should interrupt everything
+      //   AVAudioSessionOptions.duckOthers,    // Lowers volume of other audio
+      //   // AVAudioSessionOptions.interruptSpokenAudioAndMixWithOthers, // May be useful
+      // ]),
     ));
-    await _audioPlayer.setReleaseMode(ReleaseMode.loop); // Ensure looping
-    await _audioPlayer.setVolume(1.0); // Set volume to max for this player instance
-  }
+    await _audioPlayer.setReleaseMode(ReleaseMode.loop); // Ensure the sound loops
+    await _audioPlayer.setVolume(1.0); // Play at the player's maximum volume
 
-  Future<void> _initHapticsAndPlaySound() async {
-    print("FallDetectionOverlay: Initializing Haptics and Playing Sound.");
-    HapticFeedback.heavyImpact();
-    print("FallDetectionOverlay: Initial heavyImpact triggered.");
-    _playAlarmSound(); // Attempt to play alarm sound
+    _playAlarmSound(); // Start playing
   }
 
   Future<void> _playAlarmSound() async {
@@ -177,18 +185,22 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
     }
     try {
       print("FallDetectionOverlay: Attempting to play alarm sound.");
-      // IMPORTANT: Replace 'sounds/your_alarm_sound.mp3' with your asset path
-      await _audioPlayer.play(AssetSource('sounds/your_alarm_sound.mp3'));
-      _alarmSoundPlaying = true;
+      // **IMPORTANT**: Replace 'sounds/your_alarm_sound.mp3' with your actual asset path
+      // Ensure this file exists in assets/sounds/ and is declared in pubspec.yaml
+      await _audioPlayer.play(AssetSource('sounds/alarm.mp3'));
+      if (mounted) {
+        setState(() { _alarmSoundPlaying = true; });
+      }
       print("FallDetectionOverlay: Alarm sound play command issued.");
     } catch (e) {
       print("FallDetectionOverlay: Error playing alarm sound: $e");
-      _alarmSoundPlaying = false; // Ensure flag is false on error
+      // Attempt fallback if specific context fails (though less likely with AudioContext set on player)
+      if (mounted) setState(() => _alarmSoundPlaying = false);
     }
   }
 
   Future<void> _stopAlarmSound() async {
-    print("FallDetectionOverlay: Attempting to stop alarm sound. Currently playing: $_alarmSoundPlaying, State: ${_audioPlayer.state}");
+    print("FallDetectionOverlay: Attempting to stop alarm sound. Playing: $_alarmSoundPlaying, State: ${_audioPlayer.state}");
     if (_audioPlayer.state == PlayerState.playing || _audioPlayer.state == PlayerState.paused) {
       try {
         await _audioPlayer.stop();
@@ -197,24 +209,36 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
         print("FallDetectionOverlay: Error stopping alarm sound: $e");
       }
     }
-    _alarmSoundPlaying = false; // Always set to false after attempting to stop
-  }
-
-  void _triggerHapticFeedback(String type) { /* ... (same as before) ... */
-    print("FallDetectionOverlay: Triggering haptic: $type");
-    switch (type) {
-      case 'light': HapticFeedback.lightImpact(); break;
-      case 'medium': HapticFeedback.mediumImpact(); break;
-      case 'heavy': HapticFeedback.heavyImpact(); break;
-      default: HapticFeedback.selectionClick();
+    if (mounted) { // Ensure flag is set even if stop errored or wasn't playing
+      setState(() { _alarmSoundPlaying = false; });
     }
   }
-  void _pulseHapticForCountdown() { /* ... (same as before) ... */
+
+  void _triggerHapticFeedback(FeedbackType type) { // Using flutter_vibrate's FeedbackType
+    if (!_canVibrateDevice) {
+      print("FallDetectionOverlay: flutter_vibrate not available, using built-in haptic for type: ${type.toString()}");
+      // Map flutter_vibrate types to built-in HapticFeedback
+      switch(type){
+        case FeedbackType.light: HapticFeedback.lightImpact(); break;
+        case FeedbackType.medium: HapticFeedback.mediumImpact(); break;
+        case FeedbackType.heavy: HapticFeedback.heavyImpact(); break;
+        case FeedbackType.success: HapticFeedback.mediumImpact(); break;
+        case FeedbackType.warning: HapticFeedback.heavyImpact(); break;
+        case FeedbackType.error: HapticFeedback.heavyImpact(); break;
+        default: HapticFeedback.selectionClick(); // A generic fallback
+      }
+      return;
+    }
+    print("FallDetectionOverlay: Triggering haptic (flutter_vibrate): $type");
+    Vibrate.feedback(type);
+  }
+
+  void _pulseHapticForCountdown() {
     if (mounted && _isTimerActive) {
-      HapticFeedback.mediumImpact();
+      // Use a more noticeable haptic for each second if "abundant" is desired
+      _triggerHapticFeedback(FeedbackType.medium);
     }
   }
-
 
   void _startSecondUpdaterTimer() {
     _isTimerActive = true;
@@ -223,9 +247,8 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
       if (_remainingSeconds > 0) {
         if (mounted) setState(() => _remainingSeconds--);
       } else {
-        timer.cancel(); // Stop this timer first
-        if (_isTimerActive && mounted) { // Check _isTimerActive again
-          // Auto-triggered emergency action
+        timer.cancel();
+        if (_isTimerActive && mounted) {
           _triggerActionSequence(widget.onCallEmergency, Icons.phone_in_talk_outlined, isOkAction: false, autoTriggered: true);
         }
       }
@@ -233,18 +256,17 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
   }
 
   Future<void> _triggerActionSequence(VoidCallback action, IconData icon, {required bool isOkAction, bool autoTriggered = false}) async {
-    if (!_isTimerActive && !autoTriggered) { // If timer already inactive (e.g. user acted) and this isn't the auto-trigger
+    if (!_isTimerActive && !autoTriggered) {
       print("FallDetectionOverlay: Action sequence blocked or already handled.");
       return;
     }
     print("FallDetectionOverlay: Triggering action sequence. isOkAction: $isOkAction, autoTriggered: $autoTriggered");
 
-    // Stop everything related to ongoing alert sensory feedback
     _isTimerActive = false;
-    _secondUpdaterTimer.cancel(); // Explicitly cancel, though it might have self-cancelled if autoTriggered
+    _secondUpdaterTimer.cancel();
     _progressAnimationController.stop();
-    await _stopAlarmSound(); // Stop sound FIRST
-    _triggerHapticFeedback('heavy'); // Confirmation haptic
+    await _stopAlarmSound();
+    _triggerHapticFeedback(FeedbackType.heavy); // Strong confirmation
 
     _rushAnimationStartProgress = _currentAnimationProgress;
 
@@ -260,18 +282,19 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
     Color targetBgColor = isOkAction ? AppTheme.accentColor : AppTheme.errorColor;
     if (_currentBackgroundColor != targetBgColor) {
       _bgColorAnimation = ColorTween(begin: _currentBackgroundColor, end: targetBgColor)
-          .animate(CurvedAnimation(parent: _bgColorAnimationController, curve: Curves.easeInOut));
+          .animate(CurvedAnimation(parent: _bgColorAnimationController, curve: Curves.easeInOutCubic));
       _bgColorAnimationController.reset();
       _bgColorAnimationController.forward();
     }
 
     await Future.delayed(const Duration(milliseconds: 150));
 
-    if (mounted) { // Check mounted before starting next phase animations
+    if (mounted) {
       _rushProgressAnimationController.forward(from: 0.0);
     }
 
-    await Future.delayed(Duration(milliseconds: isOkAction ? 2500 : 2400));
+    // Increased final delay to allow all animations to be clearly perceived
+    await Future.delayed(Duration(milliseconds: isOkAction ? 2600 : 2500));
 
     if (mounted) {
       action();
@@ -280,24 +303,24 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
 
   @override
   void dispose() {
-    _stopAlarmSound(); // Ensure sound is stopped
+    print("FallDetectionOverlay: Disposing...");
+    _stopAlarmSound(); // Ensure sound is stopped as a priority
     _secondUpdaterTimer.cancel();
     _progressAnimationController.dispose();
     _rushProgressAnimationController.dispose();
     _zoomIconAnimationController.dispose();
     _bgColorAnimationController.dispose();
     _sliderFadeController.dispose();
-    _playerStateSubscription?.cancel(); // Cancel player state listener
+    _playerStateSubscription?.cancel();
     _audioPlayer.dispose();
-    print("FallDetectionOverlay disposed. Resources released.");
+    print("FallDetectionOverlay: Disposed. Resources released.");
     super.dispose();
   }
 
+  // --- BUILD METHOD ---
+  // (Copied from your last provided fall_detection_overlay.dart, which seemed visually close)
   @override
   Widget build(BuildContext context) {
-    // --- NO CHANGES TO THE BUILD METHOD ITSELF ---
-    // --- Paste the previous correct 'build' method here ---
-    // The logic changes are in initState, audio methods, and _triggerActionSequence
     final theme = Theme.of(context);
     final textTheme = theme.textTheme;
     const Color onAlertColor = Colors.white;
@@ -461,8 +484,7 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
   }
 }
 
-
-// CountdownPainter (no changes needed)
+// CountdownPainter (no changes from previous response)
 class CountdownPainter extends CustomPainter {
   final double progress;
   final Color backgroundColor;
