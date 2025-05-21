@@ -1,7 +1,9 @@
 import 'dart:async';
+
+import 'package:flutter/services.dart'; // For PlatformChannel
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:flutter_phone_direct_caller/flutter_phone_direct_caller.dart'; // Import new package
 import 'package:permission_handler/permission_handler.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 // Define the Service and Characteristic UUIDs
 const String SMART_CANE_SERVICE_UUID = "A5A20D8A-E137-4B30-9F30-1A7A91579C9C";
@@ -575,25 +577,56 @@ class BleService {
     }
   }
 
+  // Platform Channel for audio services (speakerphone)
+  static const MethodChannel _audioChannel = MethodChannel(
+      'com.sept.learning_factory.smart_cane_prototype/audio');
+
+  Future<void> _setSpeakerphoneOn(bool on) async {
+    try {
+      print("Attempting to set speakerphone: $on");
+      await _audioChannel.invokeMethod('setSpeakerphoneOn', {'on': on});
+      print("Speakerphone method invoked successfully.");
+    } on PlatformException catch (e) {
+      print("Failed to set speakerphone status: '${e.message}'.");
+    }
+  }
+
   Future<void> makePhoneCall(String phoneNumber) async {
-    if (!await Permission.phone
-        .request()
-        .isGranted) {
-      print("Phone permission not granted.");
+    // Request Phone Permission
+    var phonePermissionStatus = await Permission.phone.status;
+    if (phonePermissionStatus.isDenied) {
+      if (await Permission.phone
+          .request()
+          .isGranted) {
+        print("Phone permission granted.");
+      } else {
+        print("Phone permission denied by user.");
+        // Handle permission denial (e.g., show a message to the user)
+        return;
+      }
+    } else if (phonePermissionStatus.isPermanentlyDenied) {
+      print("Phone permission permanently denied. Opening app settings.");
+      await openAppSettings();
       return;
     }
-    final Uri launchUri = Uri(scheme: 'tel', path: phoneNumber);
-    try {
-      if (await canLaunchUrl(launchUri)) {
-        await launchUrl(launchUri);
-        print("Attempting to call: $phoneNumber");
-      } else {
-        print("Could not launch phone call to $phoneNumber");
-        // Consider showing a message to the user here
-      }
-    } catch (e) {
-      print("Error launching phone call: $e");
-      // Consider showing a message to the user here
+
+    if (!await Permission.phone.isGranted) {
+      print("Phone permission is still not granted after request.");
+      return;
+    }
+
+    // New way (direct calling)
+    print("Attempting to directly call: $phoneNumber");
+    bool? res = await FlutterPhoneDirectCaller.callNumber(phoneNumber);
+    if (res == true) {
+      print("Direct call initiated to $phoneNumber.");
+      // Add a short delay to allow the call to establish before turning on speakerphone
+      await Future.delayed(
+          const Duration(seconds: 3)); // Adjust delay as needed
+      await _setSpeakerphoneOn(true);
+    } else {
+      print("Failed to initiate direct call to $phoneNumber.");
+      // Optionally, fall back to url_launcher or show an error
     }
   }
 

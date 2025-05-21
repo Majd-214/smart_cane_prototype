@@ -1,12 +1,14 @@
 // lib/widgets/fall_detection_overlay.dart
 import 'dart:async';
 import 'dart:math' as math;
+
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:smart_cane_prototype/utils/app_theme.dart';
-import 'package:slide_to_act/slide_to_act.dart';
-import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_vibrate/flutter_vibrate.dart'; // Using flutter_vibrate
+import 'package:slide_to_act/slide_to_act.dart';
+import 'package:smart_cane_prototype/utils/app_theme.dart';
+import 'package:wakelock_plus/wakelock_plus.dart'; // Import wakelock_plus
 
 class FallDetectionOverlay extends StatefulWidget {
   final VoidCallback onImOk;
@@ -70,6 +72,9 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
   @override
   void initState() {
     super.initState();
+    WakelockPlus.enable();
+    print("FallDetectionOverlay: Wakelock enabled.");
+
     _remainingSeconds = widget.initialCountdownSeconds;
     _currentBackgroundColor = AppTheme.errorColor;
 
@@ -263,10 +268,18 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
     print("FallDetectionOverlay: Triggering action sequence. isOkAction: $isOkAction, autoTriggered: $autoTriggered");
 
     _isTimerActive = false;
+    // It's good practice to disable wakelock when the critical phase is over,
+    // for example, right before calling the action that will dismiss the overlay.
+    // However, if the call itself should keep the screen on, you might disable it later.
+    // For now, let's disable it as part of the action sequence completion.
+    // WakelockPlus.disable(); // Re-evaluate where to best place this
+    // print("FallDetectionOverlay: Wakelock disabled in _triggerActionSequence.");
+
+
     _secondUpdaterTimer.cancel();
     _progressAnimationController.stop();
     await _stopAlarmSound();
-    _triggerHapticFeedback(FeedbackType.heavy); // Strong confirmation
+    _triggerHapticFeedback(FeedbackType.heavy);
 
     _rushAnimationStartProgress = _currentAnimationProgress;
 
@@ -293,10 +306,12 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
       _rushProgressAnimationController.forward(from: 0.0);
     }
 
-    // Increased final delay to allow all animations to be clearly perceived
     await Future.delayed(Duration(milliseconds: isOkAction ? 2600 : 2500));
 
     if (mounted) {
+      // Before calling the action that might navigate away or dismiss.
+      WakelockPlus.disable();
+      print("FallDetectionOverlay: Wakelock disabled before action.");
       action();
     }
   }
@@ -304,6 +319,9 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
   @override
   void dispose() {
     print("FallDetectionOverlay: Disposing...");
+    // Ensure wakelock is disabled when the overlay is disposed
+    WakelockPlus.disable();
+    print("FallDetectionOverlay: Wakelock disabled in dispose.");
     _stopAlarmSound(); // Ensure sound is stopped as a priority
     _secondUpdaterTimer.cancel();
     _progressAnimationController.dispose();
