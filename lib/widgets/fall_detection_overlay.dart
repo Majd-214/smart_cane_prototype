@@ -236,7 +236,7 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
   void _pulseHapticForCountdown() {
     if (mounted && _isTimerActive) {
       // Use a more noticeable haptic for each second if "abundant" is desired
-      _triggerHapticFeedback(FeedbackType.heavy);
+      _triggerHapticFeedback(FeedbackType.medium);
     }
   }
 
