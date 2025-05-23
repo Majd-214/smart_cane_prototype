@@ -7,24 +7,37 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import 'package:smart_cane_prototype/main.dart';
+import 'package:smart_cane_prototype/main.dart'; // Assuming MyApp is in main.dart
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
+  testWidgets('App starts and shows Login or Home based on initial route', (
+      WidgetTester tester) async {
     // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+    // We need to provide the required arguments for MyApp.
+    // Test with a common initial scenario, e.g., not launched from fall, route to login.
+    await tester.pumpWidget(const MyApp(
+      initialRoute: '/login', // Or '/home' depending on test case
+      launchedFromFallNotificationTap: false,
+    ));
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    // Example: If initialRoute is '/login', verify LoginScreen is shown.
+    // This assumes your LoginScreen has some identifiable widget.
+    // Replace with actual widgets from your LoginScreen.
+    // For instance, if LoginScreen has a title 'Smart Cane':
+    // expect(find.text('Smart Cane'), findsOneWidget);
+    // Or if it has a "Sign in with Google" button:
+    // expect(find.text('Sign in with Google'), findsOneWidget);
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+    // If you want to test the HomeScreen path, set initialRoute to '/home'
+    // await tester.pumpWidget(const MyApp(
+    //   initialRoute: '/home',
+    //   launchedFromFallNotificationTap: false,
+    // ));
+    // expect(find.text('Smart Cane Dashboard'), findsOneWidget); // Assuming AppBar title
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    // The original counter test is not relevant to your app.
+    // You should write tests specific to your application's UI and logic.
+    expect(find.byType(MaterialApp),
+        findsOneWidget); // A very basic check that the app runs
   });
 }

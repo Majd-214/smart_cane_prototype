@@ -5,10 +5,10 @@ import 'dart:math' as math;
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_vibrate/flutter_vibrate.dart'; // Using flutter_vibrate
+import 'package:flutter_vibrate/flutter_vibrate.dart';
 import 'package:slide_to_act/slide_to_act.dart';
 import 'package:smart_cane_prototype/utils/app_theme.dart';
-import 'package:wakelock_plus/wakelock_plus.dart'; // Import wakelock_plus
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 class FallDetectionOverlay extends StatefulWidget {
   final VoidCallback onImOk;
@@ -19,7 +19,7 @@ class FallDetectionOverlay extends StatefulWidget {
     super.key,
     required this.onImOk,
     required this.onCallEmergency,
-    this.initialCountdownSeconds = 30, // Default from your existing code
+    this.initialCountdownSeconds = 30,
   });
 
   @override
@@ -48,7 +48,7 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
 
   late AnimationController _bgColorAnimationController;
   late Animation<Color?> _bgColorAnimation;
-  Color _currentBackgroundColor = AppTheme.errorColor; // Start Yellow
+  Color _currentBackgroundColor = AppTheme.errorColor;
 
   late AnimationController _sliderFadeController;
   late Animation<double> _sliderOpacityAnimation;
@@ -60,9 +60,8 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
   final AudioPlayer _audioPlayer = AudioPlayer();
   StreamSubscription? _playerStateSubscription;
   bool _alarmSoundPlaying = false;
-  bool _canVibrateDevice = false; // For flutter_vibrate
+  bool _canVibrateDevice = false;
 
-  // Durations
   final Duration _rushProgressDuration = const Duration(milliseconds: 400);
   final Duration _zoomIconDuration = const Duration(milliseconds: 500);
   final Duration _bgColorChangeDuration = const Duration(milliseconds: 400);
@@ -72,13 +71,13 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
   @override
   void initState() {
     super.initState();
-    WakelockPlus.enable();
-    print("FallDetectionOverlay: Wakelock enabled.");
+    WakelockPlus.enable().then((_) =>
+        print("FallDetectionOverlay: Wakelock enabled."));
 
     _remainingSeconds = widget.initialCountdownSeconds;
-    _currentBackgroundColor = AppTheme.errorColor;
+    _currentBackgroundColor =
+        AppTheme.errorColor; // Default to error color (e.g., red or yellow)
 
-    // Animation Controllers Initialization (copied from your provided file)
     _progressAnimationController = AnimationController(
       vsync: this, duration: Duration(seconds: widget.initialCountdownSeconds),
     )..addListener(() {
@@ -111,7 +110,8 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
     _zoomIconScaleAnimation = Tween<double>(begin: 0.3, end: 1.0)
         .animate(CurvedAnimation(parent: _zoomIconAnimationController, curve: Curves.elasticOut));
     _zoomIconOpacityAnimation = Tween<double>(begin: 0.0, end: 1.0)
-        .animate(CurvedAnimation(parent: _zoomIconAnimationController, curve: Interval(0.0, 0.6, curve: Curves.easeOut)));
+        .animate(CurvedAnimation(parent: _zoomIconAnimationController,
+        curve: const Interval(0.0, 0.6, curve: Curves.easeOut)));
 
     _bgColorAnimationController = AnimationController(vsync: this, duration: _bgColorChangeDuration)
       ..addListener(() {
@@ -124,87 +124,61 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
     );
 
     _setupAudioAndHaptics();
-
     _progressAnimationController.forward();
     _startSecondUpdaterTimer();
   }
 
   Future<void> _setupAudioAndHaptics() async {
     print("FallDetectionOverlay: Setting up Audio and Haptics.");
-
-    // Haptics setup (flutter_vibrate)
     bool? canVibrate = await Vibrate.canVibrate;
     if (mounted) {
       _canVibrateDevice = canVibrate ?? false;
       if (_canVibrateDevice) {
-        Vibrate.feedback(FeedbackType.error); // Stronger initial feedback
+        Vibrate.feedback(FeedbackType.error);
         print("FallDetectionOverlay: Initial ERROR haptic triggered (flutter_vibrate).");
       } else {
-        HapticFeedback.heavyImpact(); // Fallback
+        HapticFeedback.heavyImpact();
         print("FallDetectionOverlay: Initial HEAVY haptic triggered (built-in fallback).");
       }
     }
 
     _playerStateSubscription = _audioPlayer.onPlayerStateChanged.listen((PlayerState s) {
       print('FallDetectionOverlay: AudioPlayer current state: $s');
-      // Loop manually if ReleaseMode.loop is not perfectly reliable OR sound is very short
-      // if (s == PlayerState.completed && _alarmSoundPlaying && _isTimerActive) {
-      //   print('FallDetectionOverlay: Alarm sound completed, attempting to loop.');
-      //   _audioPlayer.seek(Duration.zero); // Rewind to start
-      //   _audioPlayer.resume(); // Play again
-      // }
     });
-    _audioPlayer.onLog.listen((msg) {
-      print('FallDetectionOverlay: audioplayers log: $msg');
-    });
+    _audioPlayer.onLog.listen((msg) =>
+        print('FallDetectionOverlay: audioplayers log: $msg'));
 
-    // CRITICAL: Configure AudioContext for Android ALARM stream
-    // This tells Android to treat this audio as an alarm.
     await _audioPlayer.setAudioContext(AudioContext(
       android: AudioContextAndroid(
-        isSpeakerphoneOn: true,       // Try to force speaker
-        stayAwake: true,              // Keep CPU awake during playback
-        contentType: AndroidContentType.sonification, // Appropriate for alerts
-        usageType: AndroidUsageType.alarm, // **THIS IS THE KEY FOR ALARM BEHAVIOR**
-        audioFocus: AndroidAudioFocus.gain, // Request and keep audio focus (gain, gainTransient, gainTransientMayDuck)
+        isSpeakerphoneOn: true,
+        stayAwake: true,
+        contentType: AndroidContentType.sonification,
+        usageType: AndroidUsageType.alarm,
+        audioFocus: AndroidAudioFocus.gain,
       ),
-      // iOS: For iOS, playback category needs to be set for similar behavior,
-      // but user requested Android-only focus for this fix.
-      // AVAudioSessionCategory.playback with appropriate options is typical.
-      // iOS: AudioContextIOS(category: AVAudioSessionCategory.playback, options: [
-      //   // AVAudioSessionOptions.mixWithOthers, // Remove if alarm should interrupt everything
-      //   AVAudioSessionOptions.duckOthers,    // Lowers volume of other audio
-      //   // AVAudioSessionOptions.interruptSpokenAudioAndMixWithOthers, // May be useful
-      // ]),
     ));
-    await _audioPlayer.setReleaseMode(ReleaseMode.loop); // Ensure the sound loops
-    await _audioPlayer.setVolume(1.0); // Play at the player's maximum volume
-
-    _playAlarmSound(); // Start playing
+    await _audioPlayer.setReleaseMode(ReleaseMode.loop);
+    await _audioPlayer.setVolume(1.0);
+    _playAlarmSound();
   }
 
   Future<void> _playAlarmSound() async {
-    if (_alarmSoundPlaying && _audioPlayer.state == PlayerState.playing) {
-      print("FallDetectionOverlay: Alarm sound already playing.");
-      return;
-    }
+    if (_alarmSoundPlaying && _audioPlayer.state == PlayerState.playing) return;
     try {
       print("FallDetectionOverlay: Attempting to play alarm sound.");
-      // **IMPORTANT**: Replace 'sounds/your_alarm_sound.mp3' with your actual asset path
-      // Ensure this file exists in assets/sounds/ and is declared in pubspec.yaml
-      await _audioPlayer.play(AssetSource('sounds/alarm.mp3'));
-      if (mounted) {
-        setState(() { _alarmSoundPlaying = true; });
-      }
+      await _audioPlayer.play(
+          AssetSource('sounds/alarm.mp3')); // Ensure this asset exists
+      if (mounted) setState(() {
+        _alarmSoundPlaying = true;
+      });
       print("FallDetectionOverlay: Alarm sound play command issued.");
     } catch (e) {
       print("FallDetectionOverlay: Error playing alarm sound: $e");
-      // Attempt fallback if specific context fails (though less likely with AudioContext set on player)
       if (mounted) setState(() => _alarmSoundPlaying = false);
     }
   }
 
-  Future<void> _stopAlarmSound() async {
+  Future<void> _stopAlarmSound({bool calledFromDispose = false}) async {
     print("FallDetectionOverlay: Attempting to stop alarm sound. Playing: $_alarmSoundPlaying, State: ${_audioPlayer.state}");
     if (_audioPlayer.state == PlayerState.playing || _audioPlayer.state == PlayerState.paused) {
       try {
@@ -214,35 +188,28 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
         print("FallDetectionOverlay: Error stopping alarm sound: $e");
       }
     }
-    if (mounted) { // Ensure flag is set even if stop errored or wasn't playing
+    if (!calledFromDispose && mounted) {
       setState(() { _alarmSoundPlaying = false; });
+    } else {
+      _alarmSoundPlaying = false;
     }
   }
 
-  void _triggerHapticFeedback(FeedbackType type) { // Using flutter_vibrate's FeedbackType
+  void _triggerHapticFeedback(FeedbackType type) {
     if (!_canVibrateDevice) {
-      print("FallDetectionOverlay: flutter_vibrate not available, using built-in haptic for type: ${type.toString()}");
-      // Map flutter_vibrate types to built-in HapticFeedback
       switch(type){
         case FeedbackType.light: HapticFeedback.lightImpact(); break;
         case FeedbackType.medium: HapticFeedback.mediumImpact(); break;
-        case FeedbackType.heavy: HapticFeedback.heavyImpact(); break;
-        case FeedbackType.success: HapticFeedback.mediumImpact(); break;
-        case FeedbackType.warning: HapticFeedback.heavyImpact(); break;
-        case FeedbackType.error: HapticFeedback.heavyImpact(); break;
-        default: HapticFeedback.selectionClick(); // A generic fallback
+        default:
+          HapticFeedback.heavyImpact();
       }
       return;
     }
-    print("FallDetectionOverlay: Triggering haptic (flutter_vibrate): $type");
     Vibrate.feedback(type);
   }
 
   void _pulseHapticForCountdown() {
-    if (mounted && _isTimerActive) {
-      // Use a more noticeable haptic for each second if "abundant" is desired
-      _triggerHapticFeedback(FeedbackType.medium);
-    }
+    if (mounted && _isTimerActive) _triggerHapticFeedback(FeedbackType.medium);
   }
 
   void _startSecondUpdaterTimer() {
@@ -261,20 +228,16 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
   }
 
   Future<void> _triggerActionSequence(VoidCallback action, IconData icon, {required bool isOkAction, bool autoTriggered = false}) async {
-    if (!_isTimerActive && !autoTriggered) {
-      print("FallDetectionOverlay: Action sequence blocked or already handled.");
+    if ((!_isTimerActive && !autoTriggered) ||
+        _actionSubmitted) { // Added _actionSubmitted check
+      print(
+          "FallDetectionOverlay: Action sequence blocked or already submitted.");
       return;
     }
-    print("FallDetectionOverlay: Triggering action sequence. isOkAction: $isOkAction, autoTriggered: $autoTriggered");
-
+    print(
+        "FallDetectionOverlay: Triggering action. isOkAction: $isOkAction, auto: $autoTriggered");
+    _actionSubmitted = true; // Set submitted flag early
     _isTimerActive = false;
-    // It's good practice to disable wakelock when the critical phase is over,
-    // for example, right before calling the action that will dismiss the overlay.
-    // However, if the call itself should keep the screen on, you might disable it later.
-    // For now, let's disable it as part of the action sequence completion.
-    // WakelockPlus.disable(); // Re-evaluate where to best place this
-    // print("FallDetectionOverlay: Wakelock disabled in _triggerActionSequence.");
-
 
     _secondUpdaterTimer.cancel();
     _progressAnimationController.stop();
@@ -282,16 +245,13 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
     _triggerHapticFeedback(FeedbackType.heavy);
 
     _rushAnimationStartProgress = _currentAnimationProgress;
-
     setState(() {
-      _actionSubmitted = true;
       _submittedIconData = icon;
       _hideCountdownNumber = true;
       _hideSliders = true;
     });
 
     _sliderFadeController.forward();
-
     Color targetBgColor = isOkAction ? AppTheme.accentColor : AppTheme.errorColor;
     if (_currentBackgroundColor != targetBgColor) {
       _bgColorAnimation = ColorTween(begin: _currentBackgroundColor, end: targetBgColor)
@@ -301,17 +261,13 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
     }
 
     await Future.delayed(const Duration(milliseconds: 150));
+    if (mounted) _rushProgressAnimationController.forward(from: 0.0);
+    await Future.delayed(Duration(
+        milliseconds: isOkAction ? 2000 : 1800)); // Shortened delay a bit
 
     if (mounted) {
-      _rushProgressAnimationController.forward(from: 0.0);
-    }
-
-    await Future.delayed(Duration(milliseconds: isOkAction ? 2600 : 2500));
-
-    if (mounted) {
-      // Before calling the action that might navigate away or dismiss.
-      WakelockPlus.disable();
-      print("FallDetectionOverlay: Wakelock disabled before action.");
+      WakelockPlus.disable().then((_) =>
+          print("FallDetectionOverlay: Wakelock disabled before action call."));
       action();
     }
   }
@@ -319,10 +275,9 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
   @override
   void dispose() {
     print("FallDetectionOverlay: Disposing...");
-    // Ensure wakelock is disabled when the overlay is disposed
-    WakelockPlus.disable();
-    print("FallDetectionOverlay: Wakelock disabled in dispose.");
-    _stopAlarmSound(); // Ensure sound is stopped as a priority
+    WakelockPlus.disable().then((_) =>
+        print("FallDetectionOverlay: Wakelock disabled in dispose."));
+    _stopAlarmSound(calledFromDispose: true); // Pass the flag
     _secondUpdaterTimer.cancel();
     _progressAnimationController.dispose();
     _rushProgressAnimationController.dispose();
@@ -335,35 +290,27 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
     super.dispose();
   }
 
-  // --- BUILD METHOD ---
-  // (Copied from your last provided fall_detection_overlay.dart, which seemed visually close)
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final textTheme = theme.textTheme;
     const Color onAlertColor = Colors.white;
 
-    final double displayProgress;
-    final Color currentProgressCircleColor;
-
-    if (_popCircleToFullWhite) {
-      displayProgress = 1.0;
-      currentProgressCircleColor = onAlertColor;
-    } else {
-      displayProgress = _currentAnimationProgress;
-      currentProgressCircleColor = onAlertColor;
-    }
+    final double displayProgress = _popCircleToFullWhite
+        ? 1.0
+        : _currentAnimationProgress;
+    final Color currentProgressCircleColor = onAlertColor;
     final Color progressCircleBackground = onAlertColor.withOpacity(0.20);
 
     const double countdownCircleDiameter = 280.0;
     const double countdownStrokeWidth = 12.0;
-    const double sliderHeight = 80.0;
-    const double sliderIconSize = 40.0;
-    final double sliderCircleAvatarRadius = sliderHeight / 2.2;
-    const double sliderTextFontSize = 22.0;
-    const double titleFontSize = 36.0;
-    const double subtitleFontSize = 22.0;
-    const double countdownNumberFontSize = 100.0;
+    const double sliderHeight = 70.0; // Slightly smaller
+    const double sliderIconSize = 36.0; // Slightly smaller
+    final double sliderCircleAvatarRadius = sliderHeight / 2.3;
+    const double sliderTextFontSize = 20.0; // Slightly smaller
+    const double titleFontSize = 32.0; // Slightly smaller
+    const double subtitleFontSize = 18.0; // Slightly smaller
+    const double countdownNumberFontSize = 90.0; // Slightly smaller
 
     Widget submittedActionFeedback() {
       if (!_actionSubmitted || _submittedIconData == null) return const SizedBox.shrink();
@@ -371,7 +318,8 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
         opacity: _zoomIconOpacityAnimation,
         child: ScaleTransition(
           scale: _zoomIconScaleAnimation,
-          child: Icon(_submittedIconData, color: onAlertColor, size: 120),
+          child: Icon(_submittedIconData, color: onAlertColor,
+              size: 110), // Slightly smaller
         ),
       );
     }
@@ -380,7 +328,7 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
       backgroundColor: _currentBackgroundColor,
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(16.0, 10.0, 16.0, 20.0),
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 10.0),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -389,16 +337,26 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   SizedBox(height: MediaQuery.of(context).size.height * 0.02),
-                  Text('Fall Detected!', textAlign: TextAlign.center, style: textTheme.displayMedium?.copyWith(color: onAlertColor, fontWeight: FontWeight.bold, fontSize: titleFontSize, fontFamily: 'ProductSans')),
-                  const SizedBox(height: 10),
+                  Text('Fall Detected!', textAlign: TextAlign.center,
+                      style: textTheme.displaySmall?.copyWith(
+                          color: onAlertColor,
+                          fontWeight: FontWeight.bold,
+                          fontSize: titleFontSize,
+                          fontFamily: 'ProductSans')),
+                  const SizedBox(height: 8),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 12.0),
                     child: Text(
-                      _remainingSeconds > 0 && _isTimerActive
-                          ? 'Calling emergency services and sharing location in...'
-                          : (_actionSubmitted ? 'Action Confirmed' : 'Contacting emergency services...'),
+                      _actionSubmitted ? 'Action Confirmed' : (_isTimerActive &&
+                          _remainingSeconds > 0
+                          ? 'Calling emergency services in...'
+                          : 'Contacting emergency services...'),
                       textAlign: TextAlign.center,
-                      style: textTheme.headlineSmall?.copyWith(color: onAlertColor.withOpacity(0.95), fontSize: subtitleFontSize, fontFamily: 'ProductSans', height: 1.25),
+                      style: textTheme.titleMedium?.copyWith(
+                          color: onAlertColor.withOpacity(0.95),
+                          fontSize: subtitleFontSize,
+                          fontFamily: 'ProductSans',
+                          height: 1.25),
                     ),
                   ),
                 ],
@@ -438,54 +396,62 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 8.0),
+                        padding: const EdgeInsets.symmetric(vertical: 6.0),
                         child: SlideAction(
                           key: _slideOkKey,
                           text: "I'm OK",
-                          textStyle: TextStyle(
-                            color: AppTheme.accentColor, fontWeight: FontWeight.bold, fontSize: sliderTextFontSize, fontFamily: 'ProductSans',
-                          ),
+                          textStyle: TextStyle(color: AppTheme.accentColor,
+                              fontWeight: FontWeight.bold,
+                              fontSize: sliderTextFontSize,
+                              fontFamily: 'ProductSans'),
                           outerColor: onAlertColor,
                           innerColor: AppTheme.accentColor.withAlpha(30),
                           sliderButtonIconPadding: 0,
-                          sliderButtonIcon: Container(
-                            margin: const EdgeInsets.all(6),
-                            child: CircleAvatar(
-                              radius: sliderCircleAvatarRadius, backgroundColor: AppTheme.accentColor,
-                              child: Icon(Icons.check, color: onAlertColor, size: sliderIconSize),
-                            ),
-                          ),
-                          borderRadius: sliderHeight / 2, height: sliderHeight, elevation: 0, sliderRotate: false,
+                          sliderButtonIcon: Container(margin: const EdgeInsets
+                              .all(5),
+                              child: CircleAvatar(
+                                  radius: sliderCircleAvatarRadius,
+                                  backgroundColor: AppTheme.accentColor,
+                                  child: Icon(Icons.check, color: onAlertColor,
+                                      size: sliderIconSize))),
+                          borderRadius: sliderHeight / 2,
+                          height: sliderHeight,
+                          elevation: 0,
+                          sliderRotate: false,
                           submittedIcon: const SizedBox.shrink(),
                           onSubmit: () => _triggerActionSequence(
-                            widget.onImOk, Icons.check_circle_outline, isOkAction: true,
-                          ),
+                              widget.onImOk, Icons.check_circle_outline,
+                              isOkAction: true),
                           enabled: _isTimerActive,
                         ),
                       ),
                       Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 8.0),
+                        padding: const EdgeInsets.symmetric(vertical: 6.0),
                         child: SlideAction(
                           key: _slideEmergencyKey,
                           text: 'Call Emergency',
-                          textStyle: TextStyle(
-                            color: AppTheme.errorColor, fontWeight: FontWeight.bold, fontSize: sliderTextFontSize, fontFamily: 'ProductSans',
-                          ),
+                          textStyle: TextStyle(color: AppTheme.errorColor,
+                              fontWeight: FontWeight.bold,
+                              fontSize: sliderTextFontSize,
+                              fontFamily: 'ProductSans'),
                           outerColor: onAlertColor,
                           innerColor: AppTheme.errorColor.withAlpha(30),
                           sliderButtonIconPadding: 0,
-                          sliderButtonIcon: Container(
-                            margin: const EdgeInsets.all(6),
-                            child: CircleAvatar(
-                              radius: sliderCircleAvatarRadius, backgroundColor: AppTheme.errorColor,
-                              child: Icon(Icons.call, color: onAlertColor, size: sliderIconSize),
-                            ),
-                          ),
-                          borderRadius: sliderHeight / 2, height: sliderHeight, elevation: 0, sliderRotate: false,
+                          sliderButtonIcon: Container(margin: const EdgeInsets
+                              .all(5),
+                              child: CircleAvatar(
+                                  radius: sliderCircleAvatarRadius,
+                                  backgroundColor: AppTheme.errorColor,
+                                  child: Icon(Icons.call, color: onAlertColor,
+                                      size: sliderIconSize))),
+                          borderRadius: sliderHeight / 2,
+                          height: sliderHeight,
+                          elevation: 0,
+                          sliderRotate: false,
                           submittedIcon: const SizedBox.shrink(),
                           onSubmit: () => _triggerActionSequence(
-                            widget.onCallEmergency, Icons.phone_in_talk_outlined, isOkAction: false,
-                          ),
+                              widget.onCallEmergency,
+                              Icons.phone_in_talk_outlined, isOkAction: false),
                           enabled: _isTimerActive,
                         ),
                       ),
@@ -502,53 +468,36 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
   }
 }
 
-// CountdownPainter (no changes from previous response)
 class CountdownPainter extends CustomPainter {
   final double progress;
   final Color backgroundColor;
   final Color progressColor;
   final double strokeWidth;
 
-  CountdownPainter({
-    required this.progress,
-    required this.backgroundColor,
-    required this.progressColor,
-    required this.strokeWidth,
-  });
-
+  CountdownPainter(
+      {required this.progress, required this.backgroundColor, required this.progressColor, required this.strokeWidth});
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
     final radius = math.min(size.width / 2, size.height / 2) - strokeWidth / 2;
-
     final backgroundPaint = Paint()
       ..color = backgroundColor
       ..style = PaintingStyle.stroke
       ..strokeWidth = strokeWidth;
     canvas.drawCircle(center, radius, backgroundPaint);
-
     final progressPaint = Paint()
       ..color = progressColor
       ..style = PaintingStyle.stroke
       ..strokeWidth = strokeWidth
       ..strokeCap = StrokeCap.round;
-
-    double sweepAngle = 2 * math.pi * progress;
-
     canvas.drawArc(
-      Rect.fromCircle(center: center, radius: radius),
-      -math.pi / 2,
-      sweepAngle,
-      false,
-      progressPaint,
-    );
+        Rect.fromCircle(center: center, radius: radius), -math.pi / 2,
+        2 * math.pi * progress, false, progressPaint);
   }
-
   @override
-  bool shouldRepaint(covariant CountdownPainter oldDelegate) {
-    return oldDelegate.progress != progress ||
-        oldDelegate.backgroundColor != backgroundColor ||
-        oldDelegate.progressColor != progressColor ||
-        oldDelegate.strokeWidth != strokeWidth;
-  }
+  bool shouldRepaint(covariant CountdownPainter oldDelegate) =>
+      oldDelegate.progress != progress ||
+          oldDelegate.backgroundColor != backgroundColor ||
+          oldDelegate.progressColor != progressColor ||
+          oldDelegate.strokeWidth != strokeWidth;
 }

@@ -1,8 +1,9 @@
+// lib/services/ble_service.dart
 import 'dart:async';
 
 import 'package:flutter/services.dart'; // For PlatformChannel
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:flutter_phone_direct_caller/flutter_phone_direct_caller.dart'; // Import new package
+import 'package:flutter_phone_direct_caller/flutter_phone_direct_caller.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 // Define the Service and Characteristic UUIDs
@@ -59,8 +60,8 @@ class BleService {
 
   Stream<CalibrationState> get calibrationStatusStream =>
       _calibrationStatusController.stream;
-  CalibrationState _currentInternalCalibrationState = CalibrationState
-      .idle; // Cache the state
+
+  CalibrationState _currentInternalCalibrationState = CalibrationState.idle;
 
   BleConnectionState _currentConnectionState = BleConnectionState.disconnected;
   BluetoothDevice? _connectedDevice;
@@ -74,13 +75,24 @@ class BleService {
   BluetoothCharacteristic? _calibrationCharacteristic;
   BluetoothCharacteristic? _calibrationStatusCharacteristic;
 
+  // ** MODIFIED: Check permissions, don't request **
+  Future<bool> _checkPermissions() async {
+    print("BleService: Checking permissions...");
+    var locStatus = await Permission.location.status;
+    var scanStatus = await Permission.bluetoothScan.status;
+    var connectStatus = await Permission.bluetoothConnect.status;
+
+    print("  Location: $locStatus, Scan: $scanStatus, Connect: $connectStatus");
+
+    return locStatus.isGranted && scanStatus.isGranted &&
+        connectStatus.isGranted;
+  }
+
   Future<void> initialize() async {
     print("BleService Initializing...");
-    _currentInternalCalibrationState =
-        CalibrationState.idle; // Initialize cache
-    _calibrationStatusController.add(
-        _currentInternalCalibrationState); // Notify initial state
-    await _requestPermissions();
+    _currentInternalCalibrationState = CalibrationState.idle;
+    _calibrationStatusController.add(_currentInternalCalibrationState);
+    // ** We don't request/check here anymore, just set up listeners **
 
     FlutterBluePlus.adapterState.listen((state) {
       print("BLE Adapter State: $state");
@@ -118,6 +130,7 @@ class BleService {
     print("BleService Initialized.");
   }
 
+
   void _updateConnectionState(BleConnectionState state) {
     if (_currentConnectionState != state) {
       _currentConnectionState = state;
@@ -126,20 +139,10 @@ class BleService {
       if (state == BleConnectionState.disconnected ||
           state == BleConnectionState.bluetoothOff ||
           state == BleConnectionState.noPermissions) {
-        _currentInternalCalibrationState = CalibrationState.idle; // Reset cache
-        _calibrationStatusController.add(
-            _currentInternalCalibrationState); // Notify reset
-        // Subscription cancellation is handled by disconnectFromDevice or its cascade
+        _currentInternalCalibrationState = CalibrationState.idle;
+        _calibrationStatusController.add(_currentInternalCalibrationState);
       }
     }
-  }
-
-  Future<void> _requestPermissions() async {
-    print("Requesting BLE and Location Permissions...");
-    await Permission.bluetoothScan.request();
-    await Permission.bluetoothConnect.request();
-    await Permission.locationWhenInUse.request();
-    print("Permission requests finished.");
   }
 
   Future<void> startScan({Duration timeout = const Duration(seconds: 10)}) async {
@@ -147,12 +150,11 @@ class BleService {
       print("Already scanning, connecting, connected, or disconnecting. Ignoring start scan request.");
       return;
     }
-    _currentInternalCalibrationState =
-        CalibrationState.idle; // Reset on new scan
+    _currentInternalCalibrationState = CalibrationState.idle;
     _calibrationStatusController.add(_currentInternalCalibrationState);
 
     print("Starting BLE scan...");
-    _scanResultsController.add([]); // Clear previous results
+    _scanResultsController.add([]);
     _updateConnectionState(BleConnectionState.scanning);
     try {
       final adapterState = await FlutterBluePlus.adapterState.first;
@@ -163,20 +165,19 @@ class BleService {
         _updateConnectionState(BleConnectionState.scanStopped);
         return;
       }
-      final locationStatus = await Permission.locationWhenInUse.status;
-      final bluetoothScanStatus = await Permission.bluetoothScan.status;
-      if (!locationStatus.isGranted || !bluetoothScanStatus.isGranted) {
-        print("Cannot start scan: Missing Location or Bluetooth Scan permissions.");
+
+      // ** MODIFIED PERMISSION CHECK **
+      bool hasPermissions = await _checkPermissions();
+      if (!hasPermissions) {
+        print(
+            "Cannot start scan: Essential permissions are missing. Please grant them via UI/Settings.");
         _updateConnectionState(BleConnectionState.noPermissions);
-        await _requestPermissions(); // Try requesting again
-        final newLocationStatus = await Permission.locationWhenInUse.status;
-        final newBluetoothScanStatus = await Permission.bluetoothScan.status;
-        if (!newLocationStatus.isGranted || !newBluetoothScanStatus.isGranted) {
-          _updateConnectionState(
-              BleConnectionState.scanStopped); // Still no permissions
-          return;
-        }
+        _updateConnectionState(BleConnectionState
+            .scanStopped); // Set to stopped as scan won't start
+        return;
       }
+      // *******************************
+
       await FlutterBluePlus.startScan(timeout: timeout);
       print("BLE scan started.");
     } catch (e) {
@@ -184,6 +185,13 @@ class BleService {
       _updateConnectionState(BleConnectionState.scanStopped);
     }
   }
+
+  // ... (Keep stopScan, connectToDevice, disconnectFromDevice, _clearCharacteristicReferences,
+  //      _cancelCharacteristicValueSubscriptions, _discoverServices, _parseBatteryLevel,
+  //      _parseFallDetection, _parseCalibrationStatus, readBatteryLevel, _subscribeToCharacteristic,
+  //      getCurrentConnectionState, getConnectedDevice, startBleScan, connectToScannedDevice,
+  //      disconnectCurrentDevice, resetFallDetectedState, sendCalibrationCommand,
+  //      _audioChannel, _setSpeakerphoneOn, makePhoneCall, dispose) ...
 
   Future<void> stopScan() async {
     if (FlutterBluePlus.isScanningNow) {
@@ -211,8 +219,7 @@ class BleService {
       print("Already in connection process or connected. Ignoring connect request.");
       return;
     }
-    _currentInternalCalibrationState =
-        CalibrationState.idle; // Reset on new connection attempt
+    _currentInternalCalibrationState = CalibrationState.idle;
     _calibrationStatusController.add(_currentInternalCalibrationState);
 
     print("Attempting to connect to ${device.platformName}...");
@@ -221,17 +228,15 @@ class BleService {
       if (FlutterBluePlus.isScanningNow) {
         await stopScan();
       }
-      _connectionStateSubscription
-          ?.cancel(); // Cancel previous device's state subscription
+      _connectionStateSubscription?.cancel();
       _connectionStateSubscription = device.connectionState.listen((state) {
         print("Device ${device.platformName} connection state: $state");
         if (state == BluetoothConnectionState.disconnected) {
           _connectedDevice = null;
           _connectedDeviceController.add(null);
-          _updateConnectionState(BleConnectionState
-              .disconnected); // This will reset calibration state via its notifier
+          _updateConnectionState(BleConnectionState.disconnected);
           _clearCharacteristicReferences();
-          _cancelCharacteristicValueSubscriptions(); // Ensure subs are cancelled on disconnect
+          _cancelCharacteristicValueSubscriptions();
         } else if (state == BluetoothConnectionState.connected) {
           _updateConnectionState(BleConnectionState.connected);
           print("Successfully connected to ${device.platformName}");
@@ -248,9 +253,8 @@ class BleService {
       _connectedDevice = null;
       _connectedDeviceController.add(null);
       _clearCharacteristicReferences();
-      _connectionStateSubscription
-          ?.cancel(); // Cancel the new subscription attempt if it failed
-      _cancelCharacteristicValueSubscriptions(); // Also cancel if connection fails
+      _connectionStateSubscription?.cancel();
+      _cancelCharacteristicValueSubscriptions();
     }
   }
 
@@ -268,12 +272,9 @@ class BleService {
     _updateConnectionState(BleConnectionState.disconnecting);
     try {
       await _connectedDevice!.disconnect();
-      // State update to 'disconnected' handled by connectionState listener,
-      // which will then call _cancelCharacteristicValueSubscriptions & reset calibration state.
     } catch (e) {
       print("Error disconnecting from device: $e");
-      _updateConnectionState(BleConnectionState
-          .connected); // Revert to connected if disconnect failed
+      _updateConnectionState(BleConnectionState.connected);
       _connectedDeviceController.add(_connectedDevice);
     }
   }
@@ -299,7 +300,6 @@ class BleService {
 
   Future<void> _discoverServices(BluetoothDevice device) async {
     print("Discovering services for ${device.platformName}...");
-    // Clearing refs and subs is vital before re-discovering
     _clearCharacteristicReferences();
     _cancelCharacteristicValueSubscriptions();
     try {
@@ -320,8 +320,7 @@ class BleService {
               if (characteristic.properties
                   .notify) await _subscribeToCharacteristic(
                   characteristic, _parseBatteryLevel, "Battery");
-              if (characteristic.properties
-                  .read) readBatteryLevel(); // Initial read
+              if (characteristic.properties.read) readBatteryLevel();
             } else if (charUuid == FALL_CHARACTERISTIC_UUID.toUpperCase()) {
               _fallCharacteristic = characteristic;
               print("      Found Fall Characteristic.");
@@ -350,14 +349,14 @@ class BleService {
           _calibrationCharacteristic == null ||
           _calibrationStatusCharacteristic == null) {
         print(
-            "Warning: Could not find ALL required characteristics on the Smart Cane Service. Some features might not work.");
+            "Warning: Could not find ALL required characteristics on the Smart Cane Service.");
       } else {
         print(
             "All required Smart Cane characteristics found and subscriptions attempted.");
       }
     } catch (e) {
       print("Error discovering services: $e");
-      disconnectFromDevice(); // Disconnect if service discovery fails catastrophically
+      disconnectFromDevice();
     }
   }
 
@@ -370,9 +369,7 @@ class BleService {
         print("  Received unexpected battery value: ${value[0]}");
       }
     } else {
-      // Don't add to controller if empty, could be an issue with peripheral or connection
-      print(
-          "  Received empty value from Battery Characteristic. No update to battery level.");
+      print("  Received empty value from Battery Characteristic.");
     }
   }
 
@@ -381,13 +378,12 @@ class BleService {
       bool fallDetected = value[0] == 1;
       _fallDetectedController.add(fallDetected);
     } else {
-      print(
-          "  Received empty value from Fall Characteristic. No update to fall status.");
+      print("  Received empty value from Fall Characteristic.");
     }
   }
 
   void _parseCalibrationStatus(List<int> value) {
-    CalibrationState previousState = _currentInternalCalibrationState; // Use cached state
+    CalibrationState previousState = _currentInternalCalibrationState;
 
     if (value.isNotEmpty) {
       int statusByte = value[0];
@@ -402,27 +398,19 @@ class BleService {
           _currentInternalCalibrationState = CalibrationState.inProgress;
           break;
         default:
-          print(
-              "  Received unknown calibration status byte: $statusByte. Treating as FAILED.");
+          print("  Received unknown calibration status byte: $statusByte.");
           _currentInternalCalibrationState = CalibrationState.failed;
           break;
       }
       print(
           "  Parsed Calibration Status: $_currentInternalCalibrationState (from byte $statusByte)");
     } else {
-      // This case should ideally not be hit if onValueReceived only fires on actual data.
-      // If it does, it means the peripheral sent an empty notification, which is odd for this characteristic.
-      print(
-          "  Received empty value from Calibration Status Characteristic. Current internal state: $previousState");
+      print("  Received empty value from Calibration Status Characteristic.");
       if (previousState != CalibrationState.idle) {
-        // If we were inProgress or success and suddenly get empty, that's a failure.
         _currentInternalCalibrationState = CalibrationState.failed;
         print("  Transitioning to FAILED due to empty value when not idle.");
       }
-      // If previousState was idle, _currentInternalCalibrationState remains idle (no change on empty if idle).
     }
-    // Only notify listeners if the state actually changed, or if it's a specific update we always want to pass.
-    // For calibration, any explicit status from ESP32 is usually important.
     _calibrationStatusController.add(_currentInternalCalibrationState);
   }
 
@@ -432,14 +420,14 @@ class BleService {
       print("Reading battery level...");
       try {
         List<int> value = await _batteryCharacteristic!.read();
-        _parseBatteryLevel(value); // Use the parser to update the stream
+        _parseBatteryLevel(value);
         if (value.isNotEmpty && value[0] >= 0 && value[0] <= 100)
           return value[0];
       } catch (e) {
         print("Error reading battery level: $e");
       }
     } else {
-      print("Cannot read battery level: Not connected, characteristic not found, or does not support reading.");
+      print("Cannot read battery level: Not connected/found/readable.");
     }
     return null;
   }
@@ -453,7 +441,7 @@ class BleService {
     if (!characteristic.properties.notify &&
         !characteristic.properties.indicate) {
       print(
-          "Characteristic $charUuid ($logName) does not support notifications or indications.");
+          "Characteristic $charUuid ($logName) does not support notifications.");
       return;
     }
 
@@ -463,121 +451,88 @@ class BleService {
       _characteristicValueSubscriptions.remove(charUuid);
     }
 
-    print(
-        "Subscribing to notifications for $charUuid ($logName) using onValueReceived...");
+    print("Subscribing to notifications for $charUuid ($logName)...");
     try {
       bool isNotifying = characteristic.isNotifying;
       if (!isNotifying) {
         await characteristic.setNotifyValue(true);
         print("Set notify value to true for $charUuid ($logName).");
       } else {
-        print(
-            "Characteristic $charUuid ($logName) is already notifying (isNotifying was true).");
+        print("Characteristic $charUuid ($logName) is already notifying.");
       }
 
       _characteristicValueSubscriptions[charUuid] =
           characteristic.onValueReceived.listen(
               dataParser,
-          onError: (e) {
-            print("Error receiving data from $charUuid ($logName): $e");
-            if (charUuid == CALIBRATION_STATUS_UUID.toUpperCase()) {
-              _currentInternalCalibrationState =
-                  CalibrationState.failed; // Update cache
-              _calibrationStatusController.add(
-                  _currentInternalCalibrationState); // Notify
-            }
-          },
-          onDone: () {
-            print("Stream for $charUuid ($logName) is done.");
-            _characteristicValueSubscriptions.remove(charUuid);
-            // If it's calibration status and it's done, maybe revert to idle if not success/fail?
-            // Or assume disconnect is imminent. For now, just remove.
-          },
-              cancelOnError: true // Automatically cancel subscription on error
-      );
+              onError: (e) {
+                print("Error receiving data from $charUuid ($logName): $e");
+                if (charUuid == CALIBRATION_STATUS_UUID.toUpperCase()) {
+                  _currentInternalCalibrationState = CalibrationState.failed;
+                  _calibrationStatusController.add(
+                      _currentInternalCalibrationState);
+                }
+              },
+              onDone: () {
+                print("Stream for $charUuid ($logName) is done.");
+                _characteristicValueSubscriptions.remove(charUuid);
+              },
+              cancelOnError: true
+          );
       print("Successfully subscribed to $charUuid ($logName).");
     } catch (e, s) {
       print("Error setting up subscription for $charUuid ($logName): $e\n$s");
       if (charUuid == CALIBRATION_STATUS_UUID.toUpperCase()) {
-        _currentInternalCalibrationState =
-            CalibrationState.failed; // Update cache
-        _calibrationStatusController.add(
-            _currentInternalCalibrationState); // Notify
+        _currentInternalCalibrationState = CalibrationState.failed;
+        _calibrationStatusController.add(_currentInternalCalibrationState);
       }
     }
   }
 
-  BleConnectionState getCurrentConnectionState() {
-    return _currentConnectionState;
-  }
+  BleConnectionState getCurrentConnectionState() => _currentConnectionState;
 
-  BluetoothDevice? getConnectedDevice() {
-    return _connectedDevice;
-  }
+  BluetoothDevice? getConnectedDevice() => _connectedDevice;
 
-  void startBleScan() {
-    startScan();
-  }
+  void startBleScan() => startScan();
 
-  void connectToScannedDevice(BluetoothDevice device) {
-    connectToDevice(device);
-  }
+  void connectToScannedDevice(BluetoothDevice device) =>
+      connectToDevice(device);
 
-  Future<void> disconnectCurrentDevice() async {
-    await disconnectFromDevice();
-  }
-
+  Future<void> disconnectCurrentDevice() async => await disconnectFromDevice();
   void resetFallDetectedState() {
     print("Service: Resetting fall detected state.");
-    _fallDetectedController.add(false); // Emit false to update UI
-    // TODO: Implement sending a reset command to the ESP32 if needed/possible
+    _fallDetectedController.add(false);
   }
 
   Future<void> sendCalibrationCommand() async {
     if (_currentConnectionState != BleConnectionState.connected ||
-        _calibrationCharacteristic == null) {
+        _calibrationCharacteristic == null ||
+        !(_calibrationCharacteristic!.properties.write ||
+            _calibrationCharacteristic!.properties.writeWithoutResponse)) {
       print(
-          "Cannot send calibration command: Not connected or calibration characteristic not found.");
-      // UI should prevent this, but if called, don't change cal state unless it's an error condition for an *attempt*
-      return;
-    }
-    if (!(_calibrationCharacteristic!.properties.write ||
-        _calibrationCharacteristic!.properties.writeWithoutResponse)) {
-      print("Cannot send calibration command: Characteristic is not writable.");
+          "Cannot send calibration command: Not connected, not found, or not writable.");
       return;
     }
 
-    // Set internal state to inProgress and notify listeners
-    // Only transition to inProgress if we are starting fresh (idle) or after a conclusive end (success/failed)
-    if (_currentInternalCalibrationState == CalibrationState.idle ||
-        _currentInternalCalibrationState == CalibrationState.success ||
-        _currentInternalCalibrationState == CalibrationState.failed) {
-      _currentInternalCalibrationState = CalibrationState.inProgress;
-      _calibrationStatusController.add(_currentInternalCalibrationState);
-    } else
     if (_currentInternalCalibrationState == CalibrationState.inProgress) {
       print("Calibration is already in progress. New command ignored.");
-      return; // Don't send if already processing
+      return;
     }
+    _currentInternalCalibrationState = CalibrationState.inProgress;
+    _calibrationStatusController.add(_currentInternalCalibrationState);
 
     print("Sending calibration command (value: [1]) to ESP32...");
     try {
       await _calibrationCharacteristic!.write([1],
           withoutResponse: _calibrationCharacteristic!.properties
               .writeWithoutResponse);
-      print("Calibration command successfully sent to ESP32's queue.");
-      // Now we wait for the ESP32 to send notifications on the CALIBRATION_STATUS_UUID
-      // The ESP32 itself should send an "inProgress" (2) notification first.
+      print("Calibration command successfully sent.");
     } catch (e) {
-      print("Error writing calibration command to ESP32: $e");
-      _currentInternalCalibrationState =
-          CalibrationState.failed; // Update cache
-      _calibrationStatusController.add(
-          _currentInternalCalibrationState); // Notify
+      print("Error writing calibration command: $e");
+      _currentInternalCalibrationState = CalibrationState.failed;
+      _calibrationStatusController.add(_currentInternalCalibrationState);
     }
   }
 
-  // Platform Channel for audio services (speakerphone)
   static const MethodChannel _audioChannel = MethodChannel(
       'com.sept.learning_factory.smart_cane_prototype/audio');
 
@@ -585,48 +540,32 @@ class BleService {
     try {
       print("Attempting to set speakerphone: $on");
       await _audioChannel.invokeMethod('setSpeakerphoneOn', {'on': on});
-      print("Speakerphone method invoked successfully.");
+      print("Speakerphone method invoked.");
     } on PlatformException catch (e) {
-      print("Failed to set speakerphone status: '${e.message}'.");
+      print("Failed to set speakerphone: '${e.message}'.");
     }
   }
 
   Future<void> makePhoneCall(String phoneNumber) async {
-    // Request Phone Permission
     var phonePermissionStatus = await Permission.phone.status;
-    if (phonePermissionStatus.isDenied) {
-      if (await Permission.phone
+    if (!phonePermissionStatus.isGranted) {
+      if (!await Permission.phone
           .request()
           .isGranted) {
-        print("Phone permission granted.");
-      } else {
-        print("Phone permission denied by user.");
-        // Handle permission denial (e.g., show a message to the user)
+        print("Phone permission denied.");
+        await openAppSettings(); // Guide user if denied
         return;
       }
-    } else if (phonePermissionStatus.isPermanentlyDenied) {
-      print("Phone permission permanently denied. Opening app settings.");
-      await openAppSettings();
-      return;
     }
 
-    if (!await Permission.phone.isGranted) {
-      print("Phone permission is still not granted after request.");
-      return;
-    }
-
-    // New way (direct calling)
     print("Attempting to directly call: $phoneNumber");
     bool? res = await FlutterPhoneDirectCaller.callNumber(phoneNumber);
     if (res == true) {
-      print("Direct call initiated to $phoneNumber.");
-      // Add a short delay to allow the call to establish before turning on speakerphone
-      await Future.delayed(
-          const Duration(seconds: 3)); // Adjust delay as needed
+      print("Direct call initiated.");
+      await Future.delayed(const Duration(seconds: 3));
       await _setSpeakerphoneOn(true);
     } else {
-      print("Failed to initiate direct call to $phoneNumber.");
-      // Optionally, fall back to url_launcher or show an error
+      print("Failed to initiate direct call.");
     }
   }
 
@@ -634,21 +573,8 @@ class BleService {
     print("BleService Disposing...");
     _connectionStateSubscription?.cancel();
     _isScanningSubscription?.cancel();
-
-    if (_connectedDevice != null &&
-        (_currentConnectionState == BleConnectionState.connected ||
-            _currentConnectionState == BleConnectionState.connecting ||
-            _currentConnectionState == BleConnectionState
-                .disconnecting)) { // Also if in process of disconnecting
-      print(
-          "Dispose: Attempting to ensure disconnection from ${_connectedDevice!
-              .platformName}");
-      disconnectFromDevice(); // This handles cancelling subscriptions if it leads to a disconnected state.
-    } else {
-      // If not connected or trying to connect/disconnect, ensure subs are cleared manually
-      _cancelCharacteristicValueSubscriptions();
-    }
-
+    disconnectFromDevice(); // Attempt clean disconnect
+    _cancelCharacteristicValueSubscriptions();
     _connectionStateController.close();
     _scanResultsController.close();
     _batteryLevelController.close();
