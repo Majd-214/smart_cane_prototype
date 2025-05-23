@@ -2,12 +2,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:flutter_background_service/flutter_background_service.dart'; // <-- ADD THIS
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:smart_cane_prototype/main.dart'; // For onBackgroundConnectionUpdate & onFallDetectedNative streams
-import 'package:smart_cane_prototype/services/background_service_handler.dart'; // For constants
+import 'package:smart_cane_prototype/main.dart';
+import 'package:smart_cane_prototype/services/background_service_handler.dart'; // <-- ADD THIS
 import 'package:smart_cane_prototype/services/ble_service.dart';
 import 'package:smart_cane_prototype/services/permission_service.dart';
 import 'package:smart_cane_prototype/utils/app_theme.dart';
@@ -44,6 +44,7 @@ class _HomeScreenState extends State<HomeScreen> {
   StreamSubscription<CalibrationState>? _bleCalibrationStatusSubscription;
   StreamSubscription<Map<String, dynamic>>? _backgroundConnectionSubscription;
   StreamSubscription<bool>? _nativeFallSubscriptionHomeScreen;
+  StreamSubscription<bool>? _fallAlertSubscriptionHomeScreen;
 
   bool _isFallOverlayVisible = false;
   bool _isBackgroundServiceRunning = false;
@@ -59,18 +60,19 @@ class _HomeScreenState extends State<HomeScreen> {
     _uiBleConnectionState = _bleService.getCurrentConnectionState();
     _uiConnectedDevice = _bleService.getConnectedDevice();
 
-    _nativeFallSubscriptionHomeScreen = onFallDetectedNative.listen((isFall) {
+    _fallAlertSubscriptionHomeScreen = onFallAlertTriggered.listen((isFall) {
       if (isFall && mounted && !_isFallOverlayVisible) {
-        print(
-            "HomeScreen: Native fall detected stream received in initState. Showing overlay.");
+        print("HomeScreen: Fall alert stream received. Showing overlay.");
         _showFallDetectionOverlay();
       }
     });
+
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
       bool permissionsGranted = await PermissionService.requestAllPermissions(
           context);
+
       if (!permissionsGranted && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
             "Warning: Not all permissions granted. App may not function fully."),
@@ -87,13 +89,14 @@ class _HomeScreenState extends State<HomeScreen> {
         bool argumentIndicatesFall = arguments?['fallDetected'] == true;
         print("HomeScreen: PostFrame: launchedFromFall=${widget
             .launchedFromFall}, argumentIndicatesFall=$argumentIndicatesFall, overlayVisible=$_isFallOverlayVisible");
-        if ((widget.launchedFromFall || argumentIndicatesFall) &&
-            !_isFallOverlayVisible) {
-          print(
-              "HomeScreen: Fall detected on launch/navigation. Showing overlay.");
-          _showFallDetectionOverlay();
-        }
       }
+
+      if (widget.launchedFromFall && !_isFallOverlayVisible) {
+        print(
+            "HomeScreen: PostFrame: launchedFromFall is true. Showing overlay.");
+        _showFallDetectionOverlay();
+      }
+
       _initializeUiBleAndMaybeScan();
       await _syncWithBackgroundServiceState();
     });
@@ -280,15 +283,19 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _showFallDetectionOverlay() {
     if (!mounted || _isFallOverlayVisible) {
-      if (_isFallOverlayVisible) print(
-          "HomeScreen: Overlay already visible, not showing again.");
+      if (_isFallOverlayVisible) print("HomeScreen: Overlay already visible.");
       return;
     }
     print("HomeScreen: Attempting to show fall detection overlay.");
     setState(() {
       _isFallOverlayVisible = true;
-      _uiFallDetectedState = true;
+      _uiFallDetectedState = true; // Also set UI state
     });
+
+    // Clear the SharedPreferences flag *before* showing overlay
+    SharedPreferences.getInstance().then((prefs) =>
+        prefs.remove('fall_pending_alert'));
+
     Navigator.of(context).push(
       PageRouteBuilder(
           opaque: false,
@@ -300,7 +307,7 @@ class _HomeScreenState extends State<HomeScreen> {
             },
             onCallEmergency: () {
               if (Navigator.canPop(context)) Navigator.of(context).pop();
-              _bleService.makePhoneCall('+19058028483');
+              _bleService.makePhoneCall('+19058028483'); // Use your number
               _handleFallDetectedResetLogic();
             },
           ),
@@ -309,23 +316,43 @@ class _HomeScreenState extends State<HomeScreen> {
           transitionDuration: const Duration(milliseconds: 300)
       ),
     ).then((_) {
+      // This 'then' block runs when the overlay is popped/dismissed.
       if (mounted) {
+        print("HomeScreen: Overlay dismissed or popped.");
+        // Ensure state is clean regardless of how it was dismissed
         if (_isFallOverlayVisible) setState(() =>
         _isFallOverlayVisible = false);
+        // Ensure reset logic runs if UI state still shows fall
         if (_uiFallDetectedState) _handleFallDetectedResetLogic();
       }
     });
   }
 
   void _dismissFallDetectionOverlay() {
-    if (_isFallOverlayVisible && mounted && Navigator.canPop(context)) Navigator
-        .of(context).pop();
+    if (_isFallOverlayVisible && mounted && Navigator.canPop(context)) {
+      print("HomeScreen: Dismissing overlay programmatically.");
+      Navigator.of(context).pop();
+    }
   }
 
-  void _handleFallDetectedResetLogic() {
-    if (mounted && _uiFallDetectedState) setState(() =>
-    _uiFallDetectedState = false);
+  void _handleFallDetectedResetLogic() async {
+    // <-- Make async
+    print("HomeScreen: Handling Fall Reset Logic.");
+    _dismissFallDetectionOverlay(); // Ensure it's dismissed
+
+    if (mounted && _uiFallDetectedState) {
+      setState(() => _uiFallDetectedState = false);
+    }
     _bleService.resetFallDetectedState();
+
+    // --- ADD/ENSURE THIS ---
+    // Clear SharedPreferences flag as a final safety measure
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('fall_pending_alert');
+    // Tell the background service the fall is handled
+    FlutterBackgroundService().invoke(resetFallHandlingEvent);
+    print("HomeScreen: Cleared SP flag and invoked resetFallHandlingEvent.");
+    // --------------------
   }
 
   void _handleConnectDisconnect() {

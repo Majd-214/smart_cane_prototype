@@ -1,9 +1,7 @@
 // lib/services/background_service_handler.dart
 import 'dart:async';
-import 'dart:ui';
 
 import 'package:flutter_background_service/flutter_background_service.dart';
-import 'package:flutter_background_service_android/flutter_background_service_android.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:smart_cane_prototype/services/ble_service.dart'; // For UUIDs & constants
@@ -20,6 +18,8 @@ const String bgServiceSetDeviceEvent = "setDevice";
 const String triggerFallAlertUIEvent = "triggerFallAlertUI";
 const String backgroundServiceConnectionUpdateEvent =
     "backgroundConnectionUpdate";
+const String resetFallHandlingEvent = "resetFallHandling"; // New event to reset the flag
+
 
 // --- Background State ---
 BluetoothDevice? _connectedDeviceBg;
@@ -30,6 +30,8 @@ bool _isFallHandlingInProgress = false;
 String? _targetDeviceId;
 bool _isConnecting = false;
 ServiceInstance? _serviceInstance;
+Timer? _fallResetTimer; // Explicit timer for failsafe reset
+
 
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
@@ -40,10 +42,10 @@ void onStart(ServiceInstance service) async {
     print("BG Service: Received stop event.");
     await _disconnectBg();
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(
-      bgServiceDeviceIdKey,
-    ); // Clear stored device on explicit stop
+    await prefs.remove(bgServiceDeviceIdKey);
     _targetDeviceId = null;
+    _isFallHandlingInProgress = false; // Ensure flag is reset on stop
+    _fallResetTimer?.cancel(); // Cancel timer on stop
     service.stopSelf();
     print("BG Service: Stopped self.");
   });
@@ -52,34 +54,44 @@ void onStart(ServiceInstance service) async {
     final deviceId = event?['deviceId'] as String?;
     if (deviceId != null) {
       print("BG Service: Received device ID via event: $deviceId");
-      bool needsReconnect =
-          (_targetDeviceId != deviceId || _connectedDeviceBg == null);
+      bool needsReconnect = (_targetDeviceId != deviceId ||
+          _connectedDeviceBg == null);
       _targetDeviceId = deviceId;
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(bgServiceDeviceIdKey, deviceId);
 
-      if (needsReconnect) {
+      if (needsReconnect &&
+          !_isFallHandlingInProgress) { // Only connect if not handling fall
         await _disconnectBg();
         _connectToTargetDevice();
       } else {
         print(
-          "BG Service: Device ID $deviceId already set and connected/connecting. No action needed.",
-        );
+            "BG Service: Device ID $deviceId already set / connected / handling fall. No action needed.");
       }
     } else {
-      // deviceId is null, meaning UI wants to clear the target (e.g. on explicit disconnect from UI)
-      print(
-        "BG Service: Received null deviceId via event, stopping monitoring for specific device.",
-      );
+      print("BG Service: Received null deviceId. Clearing target.");
       await _disconnectBg();
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(bgServiceDeviceIdKey);
       _targetDeviceId = null;
       _serviceInstance?.invoke(backgroundServiceConnectionUpdateEvent, {
-        'connected': false,
-        'deviceId': null,
-        'deviceName': null,
+        'connected': false, 'deviceId': null, 'deviceName': null,
       });
+    }
+  });
+
+  service.on(resetFallHandlingEvent).listen((event) {
+    print("BG Service: Received reset fall handling event from UI.");
+    if (_isFallHandlingInProgress) {
+      _isFallHandlingInProgress = false;
+      _fallResetTimer?.cancel(); // Cancel the failsafe timer
+      print("BG Service: Fall handling flag reset by UI.");
+      // Check if we need to reconnect now that the fall is handled
+      if (_connectedDeviceBg == null && _targetDeviceId != null &&
+          !_isConnecting) {
+        print("BG Service: Attempting reconnect after UI fall reset.");
+        _connectToTargetDevice();
+      }
     }
   });
 
@@ -92,47 +104,31 @@ void onStart(ServiceInstance service) async {
   _targetDeviceId = prefs.getString(bgServiceDeviceIdKey);
   if (_targetDeviceId != null) {
     print(
-      "BG Service: Found stored device ID on start: $_targetDeviceId. Attempting connect.",
-    );
+        "BG Service: Found stored device ID: $_targetDeviceId. Attempting connect.");
     _connectToTargetDevice();
   } else {
-    print(
-      "BG Service: No stored device ID on start. Waiting for UI to send device via event.",
-    );
+    print("BG Service: No stored device ID. Waiting for UI event.");
     _serviceInstance?.invoke(backgroundServiceConnectionUpdateEvent, {
-      'connected': false,
-      'deviceId': null,
-      'deviceName': null,
+      'connected': false, 'deviceId': null, 'deviceName': null,
     });
   }
 
   Timer.periodic(const Duration(seconds: 35), (timer) async {
-    // Slightly shorter heartbeat
-    final bgServiceInstance = FlutterBackgroundService();
-    bool isRunning = await bgServiceInstance.isRunning();
+    bool isRunning = await FlutterBackgroundService().isRunning();
     if (!isRunning) {
       timer.cancel();
       print("BG Service: Heartbeat - Service stopped.");
       return;
     }
-    if (service is AndroidServiceInstance) {
-      if (!(await service.isForegroundService())) {
-        timer.cancel();
-        print("BG Service: Heartbeat - No longer foreground.");
-        return;
-      }
-    }
     print(
-      "BG Service: Heartbeat - Target: $_targetDeviceId, Connected: ${_connectedDeviceBg?.remoteId.str}, Connecting: $_isConnecting, FallHandling: $_isFallHandlingInProgress",
-    );
-    if (_targetDeviceId != null &&
-        _connectedDeviceBg == null &&
-        !_isConnecting &&
-        !_isFallHandlingInProgress &&
+        "BG Service: Heartbeat - Target: $_targetDeviceId, Connected: ${_connectedDeviceBg
+            ?.remoteId
+            .str}, Connecting: $_isConnecting, FallHandling: $_isFallHandlingInProgress");
+    if (_targetDeviceId != null && _connectedDeviceBg == null &&
+        !_isConnecting && !_isFallHandlingInProgress &&
         _reconnectTimer == null) {
       print(
-        "BG Service: Heartbeat - Not connected but should be. Attempting reconnect.",
-      );
+          "BG Service: Heartbeat - Not connected but should be. Attempting reconnect.");
       _connectToTargetDevice();
     }
   });
@@ -381,23 +377,36 @@ Future<void> _discoverServicesBg(BluetoothDevice device) async {
   }
 }
 
-void _handleFallDetection(List<int> value, ServiceInstance service) {
+void _handleFallDetection(List<int> value, ServiceInstance service) async {
+  // <-- Make async
   if (value.isNotEmpty && value[0] == 1 && !_isFallHandlingInProgress) {
     _isFallHandlingInProgress = true;
     print(
-      "BG Service: !!! FALL DETECTED on $_targetDeviceId !!! Invoking UI event: $triggerFallAlertUIEvent",
-    );
+        "BG Service: !!! FALL DETECTED on $_targetDeviceId !!! Invoking UI event & setting flag.");
+
+    // --- ADD THIS ---
+    // Set a flag in SharedPreferences so the app knows it needs to show the overlay on launch
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('fall_pending_alert', true);
+    // --------------
+
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
-    service.invoke(triggerFallAlertUIEvent);
-    Timer(const Duration(seconds: 60), () {
-      print("BG Service: Resetting fall handling flag.");
-      _isFallHandlingInProgress = false;
-      if (_connectedDeviceBg == null &&
-          _targetDeviceId != null &&
-          !_isConnecting) {
-        print("BG Service: Attempting reconnect after fall handling cooldown.");
-        _connectToTargetDevice();
+    service.invoke(
+        triggerFallAlertUIEvent); // This will trigger the notification in main.dart
+
+    _fallResetTimer?.cancel();
+    _fallResetTimer = Timer(const Duration(seconds: 90), () {
+      if (_isFallHandlingInProgress) {
+        print("BG Service: Failsafe timer - Resetting fall handling flag.");
+        _isFallHandlingInProgress = false;
+        // Also clear the SharedPreferences flag as a failsafe
+        prefs.remove('fall_pending_alert');
+        if (_connectedDeviceBg == null && _targetDeviceId != null &&
+            !_isConnecting) {
+          print("BG Service: Attempting reconnect after failsafe timer.");
+          _connectToTargetDevice();
+        }
       }
     });
   }
