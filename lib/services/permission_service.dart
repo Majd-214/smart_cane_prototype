@@ -13,6 +13,7 @@ class PermissionService {
       Permission.bluetoothConnect,
       Permission.notification,
       Permission.phone,
+      Permission.systemAlertWindow,
     ];
 
     // Request the primary set
@@ -22,12 +23,20 @@ class PermissionService {
     bool allGranted = true;
     List<String> deniedPermissions = [];
     List<Permission> permanentlyDenied = [];
+    bool alertWindowNeeded = false;
 
     // Check primary permissions
     statuses.forEach((permission, status) {
       print("  Permission: $permission, Status: $status");
-      if (!status.isGranted && !status.isLimited) {
-        // isLimited is mostly for photos/iOS
+
+      if (permission == Permission.systemAlertWindow) {
+        if (!status.isGranted) {
+          print("  WARNING: System Alert Window permission is NOT granted.");
+          alertWindowNeeded = true;
+          // Don't mark as denied/allGranted = false *just* for this,
+          // but track that it needs special handling.
+        }
+      } else if (!status.isGranted && !status.isLimited) {
         allGranted = false;
         deniedPermissions.add(_getPermissionName(permission));
         if (status.isPermanentlyDenied) {
@@ -41,36 +50,27 @@ class PermissionService {
       PermissionStatus bgStatus = await Permission.locationAlways.request();
       print("  Permission: ${Permission.locationAlways}, Status: $bgStatus");
       if (!bgStatus.isGranted) {
-        // Decide if background is mandatory. For your feature, it likely is.
         allGranted = false;
         deniedPermissions.add(_getPermissionName(Permission.locationAlways));
         if (bgStatus.isPermanentlyDenied) {
           permanentlyDenied.add(Permission.locationAlways);
         }
-        print(
-          "  WARNING: Background location not granted. Background features will fail.",
-        );
       }
     } else {
-      print(
-        "  INFO: Skipping Background location request as primary location was denied.",
-      );
-      allGranted = false; // If primary isn't granted, we can't get background.
+      allGranted = false;
       if (!deniedPermissions.contains(
-        _getPermissionName(Permission.location),
-      )) {
+          _getPermissionName(Permission.location))) {
         deniedPermissions.add(_getPermissionName(Permission.location));
       }
     }
 
-    if (!allGranted && context.mounted) {
+    if (!allGranted || alertWindowNeeded && context.mounted) {
       print(
-        "PERMISSION_SERVICE: Some permissions were denied: $deniedPermissions",
-      );
-      // Show dialog guiding user to settings if any are permanently denied.
+          "PERMISSION_SERVICE: Some permissions were denied or need manual setup.");
       await _showPermissionDialog(
         context,
         deniedPermissions,
+        alertWindowNeeded, // Pass this flag
         permanentlyDenied.isNotEmpty,
       );
     } else if (allGranted) {
@@ -82,44 +82,51 @@ class PermissionService {
 
   static String _getPermissionName(Permission permission) {
     if (permission == Permission.location) return "Location";
-    if (permission == Permission.locationAlways)
-      return "Background Location (Always)";
+    if (permission == Permission.locationAlways) return "Background Location";
     if (permission == Permission.bluetoothScan) return "Bluetooth Scan";
     if (permission == Permission.bluetoothConnect) return "Bluetooth Connect";
     if (permission == Permission.notification) return "Notifications";
     if (permission == Permission.phone) return "Phone Calls";
+    // Add the name for System Alert Window
+    if (permission == Permission.systemAlertWindow)
+      return "Display Over Other Apps";
     return permission.toString().split('.').last;
   }
 
-  static Future<void> _showPermissionDialog(
-    BuildContext context,
-    List<String> denied,
-    bool isPermanent,
-  ) async {
-    // Check if the context is still mounted before showing the dialog
+  static Future<void> _showPermissionDialog(BuildContext context,
+      List<String> denied,
+      bool needsAlertWindow, // Added parameter
+      bool isPermanent,) async {
     if (!context.mounted) return;
+
+    String alertWindowMessage = needsAlertWindow
+        ? "\n\n• Display Over Other Apps (Crucial for immediate alerts when unlocked. You *must* grant this manually in settings)."
+        : "";
+
+    String permanentMessage = isPermanent
+        ? "Some permissions were permanently denied. Please go to your phone's Settings -> Apps -> Smart Cane -> Permissions to grant them."
+        : "Please grant these permissions for the app to work correctly.";
 
     await showDialog(
       context: context,
-      barrierDismissible: false, // User must interact
+      barrierDismissible: false,
       builder: (BuildContext context) {
         return AlertDialog(
           title: const Text("Permissions Required"),
           content: Text(
-            "The Smart Cane app needs these permissions for safety features like fall detection and emergency calls:\n\n• ${denied.join('\n• ')}\n\n" +
-                (isPermanent
-                    ? "Some permissions were permanently denied. Please go to your phone's Settings -> Apps -> Smart Cane -> Permissions to grant them."
-                    : "Please grant these permissions for the app to work correctly."),
+            "The Smart Cane app needs these permissions:\n\n• ${denied.join(
+                '\n• ')}" +
+                alertWindowMessage + // Add the alert window message
+                "\n\n" + permanentMessage,
           ),
           actions: <Widget>[
-            if (isPermanent)
-              TextButton(
-                child: const Text("Open Settings"),
-                onPressed: () {
-                  openAppSettings(); // This will open the app's settings page
-                  Navigator.of(context).pop();
-                },
-              ),
+            TextButton(
+              child: const Text("Open Settings"),
+              onPressed: () {
+                openAppSettings(); // This will open the app's settings page
+                Navigator.of(context).pop();
+              },
+            ),
             TextButton(
               child: const Text("OK"),
               onPressed: () {

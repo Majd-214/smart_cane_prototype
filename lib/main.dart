@@ -183,9 +183,9 @@ void main() async {
 
   bool isFallLaunch = launchedDueToPendingFall ||
       launchedViaFallNotificationTap;
-  String determinedInitialRoute = isFallLaunch
-      ? '/home_fall_launch'
-      : (signedIn ? '/home' : '/login');
+  String determinedInitialRoute = isFallLaunch ? '/home_fall_launch' : (signedIn
+      ? '/home'
+      : '/login');
 
   runApp(MyApp(
       initialRoute: determinedInitialRoute,

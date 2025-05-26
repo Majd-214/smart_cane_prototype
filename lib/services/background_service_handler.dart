@@ -387,7 +387,7 @@ void _handleFallDetection(List<int> value, ServiceInstance service) async {
     // --- ADD THIS ---
     // Set a flag in SharedPreferences so the app knows it needs to show the overlay on launch
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('fall_pending_alert', true);
+    await prefs.setBool('fall_pending_alert', true); // THIS IS CRUCIAL
     // --------------
 
     _reconnectTimer?.cancel();

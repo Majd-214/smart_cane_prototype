@@ -1,61 +1,78 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
+
     <uses-feature android:name="android.hardware.telephony" android:required="false"/>
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
-
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"/>
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
-
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
-
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
-
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="33"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
-
     <uses-permission android:name="android.permission.CALL_PHONE"/>
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
-    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.DISABLE_KEYGUARD"/>
     <application
-        android:label="smart_cane_prototype"
-        android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+            android:label="smart_cane_prototype"
+            android:name="${applicationName}"
+            android:icon="@mipmap/ic_launcher">
         <activity
-            android:name=".MainActivity"
-            android:exported="true"
-            android:launchMode="singleTop"
-            android:taskAffinity=""
-            android:theme="@style/LaunchTheme"
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
-            android:hardwareAccelerated="true"
-            android:enableOnBackInvokedCallback="true"
-            android:windowSoftInputMode="adjustResize">
+                android:name=".MainActivity"
+                android:exported="true"
+                android:launchMode="singleTop" android:taskAffinity=""
+                android:theme="@style/LaunchTheme"
+                android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+                android:hardwareAccelerated="true"
+                android:enableOnBackInvokedCallback="true"
+                android:windowSoftInputMode="adjustResize"
+
+                android:showWhenLocked="true"
+                android:turnScreenOn="true">
+
             <meta-data
                     android:name="io.flutter.embedding.android.NormalTheme"
                     android:resource="@style/NormalTheme"
             />
+            <meta-data android:name="android.app.notification.channel.DEFAULT"
+                       android:value="@string/default_notification_channel_id"/>
+            <meta-data android:name="com.google.firebase.messaging.default_notification_channel_id"
+                       android:value="smart_cane_fall_channel"/>
+
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+
         </activity>
 
         <service
+                android:name="flutter.overlay.window.flutter_overlay_window.OverlayService"
+                android:enabled="true"
+                android:exported="false"
+                android:foregroundServiceType="specialUse">
+            <property
+                    android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                    android:value="systemAlertWindow"/>
+        </service>
+
+
+        <service
                 android:name="id.flutter.flutter_background_service.BackgroundService"
-                android:foregroundServiceType="connectedDevice"/>
+                android:foregroundServiceType="connectedDevice|specialUse"/>
 
         <meta-data
-            android:name="flutterEmbedding"
-            android:value="2" />
+                android:name="flutterEmbedding"
+                android:value="2"/>
     </application>
     <queries>
         <intent>
