@@ -32,42 +32,64 @@ Stream<Map<String, dynamic>> get onBackgroundConnectionUpdate =>
     backgroundConnectionUpdateStreamController.stream;
 
 const String fallNotificationChannelId = 'smart_cane_fall_channel'; // Channel ID for fall alerts
-// -------------------
+
+// At the top level (outside any class)
+bool isCurrentlyHandlingFall = false;
+const int fallNotificationId = 999; // Use a constant
+
+// NEW Global Navigation Function
+void _navigateToHomeWithFall({required String from}) {
+  if (isCurrentlyHandlingFall) {
+    print(
+        "MAIN_APP: Ignoring navigation from '$from' - already handling fall.");
+    return; // <-- The Lock!
+  }
+
+  print("MAIN_APP: Proceeding with navigation from '$from'. Setting lock.");
+  isCurrentlyHandlingFall = true; // <-- Set Lock!
+
+  // Ensure we have a navigator key and context
+  if (navigatorKey.currentState != null) {
+    navigatorKey.currentState?.pushNamedAndRemoveUntil(
+      '/home', (route) => false,
+      arguments: {'fallDetected': true, 'from': from},
+    );
+  } else {
+    print("MAIN_APP: Navigator key is null - cannot navigate.");
+    // Maybe set a flag to navigate once ready? But this shouldn't happen often.
+    isCurrentlyHandlingFall = false; // Release lock if can't navigate.
+  }
+}
 
 @pragma('vm:entry-point')
 void _onDidReceiveNotificationResponse(NotificationResponse response) {
   print("MAIN_APP: Notification Tapped! Payload: ${response.payload}");
   if (response.payload == 'FALL_DETECTED_PAYLOAD') {
-    print(
-        "MAIN_APP: Fall payload detected. Navigating to home with fall arguments.");
-    fallAlertStreamController.add(true); // Signal via stream
-    navigatorKey.currentState?.pushNamedAndRemoveUntil(
-      '/home', (route) => false,
-      arguments: {'fallDetected': true, 'fromNotificationTap': true},
-    );
+    print("MAIN_APP: Fall payload detected. Attempting navigation via tap.");
+    _navigateToHomeWithFall(from: "Notification Tap");
   }
 }
 
 Future<void> _showFallNotification() async {
   print("MAIN_APP: Attempting to show FULL SCREEN fall notification.");
-  // --- MAKE SURE 'const' IS USED CORRECTLY ---
   const AndroidNotificationDetails androidPlatformChannelSpecifics =
   AndroidNotificationDetails(
     fallNotificationChannelId, // Use the constant
     'Fall Alerts',
     channelDescription: 'High-priority notifications for Smart Cane fall detection.',
     importance: Importance.max,
+    // Make sure this is max
     priority: Priority.high,
+    // Make sure this is high
     showWhen: true,
     playSound: true,
     enableVibration: true,
     fullScreenIntent: true,
-    // Auto-launch enabled
+    // Make sure this is true
     ticker: '!!! FALL DETECTED !!!',
   );
   const NotificationDetails platformChannelSpecifics =
   NotificationDetails(android: androidPlatformChannelSpecifics);
-  // ------------------------------------------
 
   await flutterLocalNotificationsPlugin.show(
       999, // Unique ID for fall notifications
@@ -124,9 +146,9 @@ Future<void> initializeAppServices() async {
 
   service.on(triggerFallAlertUIEvent).listen((event) {
     print(
-        "MAIN_APP: Received '$triggerFallAlertUIEvent' from background service.");
-    _showFallNotification(); // --- Call the defined function ---
-    fallAlertStreamController.add(true); // Signal via stream too
+        "MAIN_APP: Received '$triggerFallAlertUIEvent'. Showing notification & attempting navigation.");
+    _showFallNotification();
+    fallAlertStreamController.add(true); // Still signal via stream
   });
 
   service.on(backgroundServiceConnectionUpdateEvent).listen((event) {
@@ -213,15 +235,11 @@ class _MyAppState extends State<MyApp> {
   @override
   void initState() {
     super.initState();
-    _fallAlertSubscription =
-        onFallAlertTriggered.listen((isFall) { // Use the defined stream
-      if (isFall && mounted && navigatorKey.currentState != null) {
-        print("MyApp: Fall alert stream received. Navigating to home.");
-        // Always navigate with args to ensure HomeScreen can react
-        navigatorKey.currentState!.pushNamedAndRemoveUntil(
-          '/home', (route) => false,
-          arguments: {'fallDetected': true, 'fromStream': true},
-        );
+    _fallAlertSubscription = onFallAlertTriggered.listen((isFall) {
+      if (isFall && mounted) {
+        print(
+            "MyApp: Fall alert stream received. Attempting navigation via stream.");
+        _navigateToHomeWithFall(from: "Stream");
       }
     });
   }

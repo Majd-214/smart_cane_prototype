@@ -114,12 +114,12 @@ void onStart(ServiceInstance service) async {
   }
 
   Timer.periodic(const Duration(seconds: 35), (timer) async {
-    bool isRunning = await FlutterBackgroundService().isRunning();
-    if (!isRunning) {
-      timer.cancel();
-      print("BG Service: Heartbeat - Service stopped.");
-      return;
-    }
+    // bool isRunning = await FlutterBackgroundService().isRunning();
+    // if (!isRunning) {
+    //   timer.cancel();
+    //   print("BG Service: Heartbeat - Service stopped.");
+    //   return;
+    // }
     print(
         "BG Service: Heartbeat - Target: $_targetDeviceId, Connected: ${_connectedDeviceBg
             ?.remoteId

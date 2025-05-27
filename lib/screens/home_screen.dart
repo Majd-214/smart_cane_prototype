@@ -282,17 +282,25 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showFallDetectionOverlay() {
+    // Check the gate *first*
     if (!mounted || _isFallOverlayVisible) {
-      if (_isFallOverlayVisible) print("HomeScreen: Overlay already visible.");
+      print(
+          "HomeScreen: Overlay show skipped. Mounted: $mounted, Visible: $_isFallOverlayVisible");
       return;
     }
-    print("HomeScreen: Attempting to show fall detection overlay.");
+
+    print("HomeScreen: SHOWING fall detection overlay.");
+    // Set the flag *immediately* before pushing
     setState(() {
       _isFallOverlayVisible = true;
-      _uiFallDetectedState = true; // Also set UI state
+      _uiFallDetectedState = true;
     });
 
-    // Clear the SharedPreferences flag *before* showing overlay
+    // *** ADD THIS LINE ***
+    flutterLocalNotificationsPlugin.cancel(fallNotificationId);
+    print("HomeScreen: Cancelled fall notification ($fallNotificationId).");
+    // *******************
+
     SharedPreferences.getInstance().then((prefs) =>
         prefs.remove('fall_pending_alert'));
 
@@ -302,13 +310,15 @@ class _HomeScreenState extends State<HomeScreen> {
           pageBuilder: (context, animation, secondaryAnimation) => FallDetectionOverlay(
             initialCountdownSeconds: 30,
             onImOk: () {
-              if (Navigator.canPop(context)) Navigator.of(context).pop();
-              _handleFallDetectedResetLogic();
+              print("HomeScreen: 'I'm OK' tapped.");
+              // Directly call the dismiss and reset logic
+              _dismissAndResetOverlay();
             },
             onCallEmergency: () {
-              if (Navigator.canPop(context)) Navigator.of(context).pop();
-              _bleService.makePhoneCall('+19058028483'); // Use your number
-              _handleFallDetectedResetLogic();
+              print("HomeScreen: 'Call Emergency' tapped.");
+              _bleService.makePhoneCall('+19058028483'); // Or your number
+              // Directly call the dismiss and reset logic
+              _dismissAndResetOverlay();
             },
           ),
           transitionsBuilder: (context, animation, secondaryAnimation, child) =>
@@ -316,16 +326,64 @@ class _HomeScreenState extends State<HomeScreen> {
           transitionDuration: const Duration(milliseconds: 300)
       ),
     ).then((_) {
-      // This 'then' block runs when the overlay is popped/dismissed.
-      if (mounted) {
-        print("HomeScreen: Overlay dismissed or popped.");
-        // Ensure state is clean regardless of how it was dismissed
-        if (_isFallOverlayVisible) setState(() =>
-        _isFallOverlayVisible = false);
-        // Ensure reset logic runs if UI state still shows fall
-        if (_uiFallDetectedState) _handleFallDetectedResetLogic();
+      // This .then() block now acts as a GUARANTEED cleanup,
+      // especially for back-button presses or unexpected pops.
+      print("HomeScreen: Overlay Navigator.push().then() executed.");
+      if (mounted && _isFallOverlayVisible) {
+        print(
+            "HomeScreen: .then() is cleaning up and setting _isFallOverlayVisible = false.");
+        // If the overlay is *still* considered visible (meaning _dismissAndResetOverlay didn't run or failed),
+        // force a reset here.
+        _dismissAndResetOverlay(
+            forcePop: false); // Reset state, but don't try to pop again.
+      } else if (mounted) {
+        print(
+            "HomeScreen: .then() executed, but overlay already marked as dismissed.");
       }
     });
+  }
+
+  // NEW Centralized Function
+  void _dismissAndResetOverlay({bool forcePop = true}) async {
+    print("HomeScreen: Dismiss and Reset called. Force Pop: $forcePop");
+
+    // 1. Pop the Navigator (if needed and possible)
+    // Only pop if told to and if we believe the overlay is still up.
+    if (forcePop && _isFallOverlayVisible && Navigator.canPop(context)) {
+      print("HomeScreen: Popping navigator...");
+      Navigator.of(context).pop();
+      // We expect .then() to run after this, but we'll set state anyway.
+    }
+
+    print("HomeScreen: Releasing global fall handling lock.");
+    isCurrentlyHandlingFall = false; // <-- Release Lock!
+
+    // 2. Reset the State (ALWAYS)
+    // Check if a state change is actually needed before calling setState.
+    if (_isFallOverlayVisible || _uiFallDetectedState) {
+      print(
+          "HomeScreen: Resetting flags _isFallOverlayVisible=false, _uiFallDetectedState=false.");
+      if (mounted) {
+        setState(() {
+          _isFallOverlayVisible = false;
+          _uiFallDetectedState = false;
+        });
+      }
+    } else {
+      print("HomeScreen: Flags already reset, no state change needed.");
+    }
+
+
+    // 3. Inform Services (ALWAYS)
+    _bleService.resetFallDetectedState();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('fall_pending_alert');
+      FlutterBackgroundService().invoke(resetFallHandlingEvent);
+      print("HomeScreen: Cleared SP flag and invoked resetFallHandlingEvent.");
+    } catch (e) {
+      print("HomeScreen: Error during service reset: $e");
+    }
   }
 
   void _dismissFallDetectionOverlay() {
