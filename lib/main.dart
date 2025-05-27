@@ -7,21 +7,27 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:shared_preferences/shared_preferences.dart'; // Ensure this is imported
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:smart_cane_prototype/screens/home_screen.dart';
 import 'package:smart_cane_prototype/screens/login_screen.dart';
-import 'package:smart_cane_prototype/services/background_service_handler.dart';
+import 'package:smart_cane_prototype/services/background_service_handler.dart'; // For constants
 import 'package:smart_cane_prototype/utils/app_theme.dart';
 
 import 'firebase_options.dart';
 
+// --- Global Variables & Constants ---
+bool isCurrentlyHandlingFall = false;
+const int fallNotificationId = 999;
+const String fallHandledKey = 'fall_handled_for_this_launch_detail';
+// const String fallPendingAlertKey = 'fall_pending_alert'; // Defined in background_service_handler
+
+// --- Notification Plugin & Navigator Key ---
 final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
-// --- DEFINITIONS ---
+// --- Stream Controllers ---
 final StreamController<bool> fallAlertStreamController = StreamController<
     bool>.broadcast();
-
 Stream<bool> get onFallAlertTriggered => fallAlertStreamController.stream;
 
 final StreamController<Map<String,
@@ -31,76 +37,28 @@ final StreamController<Map<String,
 Stream<Map<String, dynamic>> get onBackgroundConnectionUpdate =>
     backgroundConnectionUpdateStreamController.stream;
 
-const String fallNotificationChannelId = 'smart_cane_fall_channel'; // Channel ID for fall alerts
+// --- Notification Channel Constants ---
+const String fallNotificationChannelId = 'smart_cane_fall_channel';
+// Using constants from imported background_service_handler.dart for service channel
+// const String serviceNotificationChannelId = notificationChannelId;
+// const String serviceNotificationChannelName = notificationChannelName;
 
-// At the top level (outside any class)
-bool isCurrentlyHandlingFall = false;
-const int fallNotificationId = 999; // Use a constant
-
-// NEW Global Navigation Function
-void _navigateToHomeWithFall({required String from}) {
-  if (isCurrentlyHandlingFall) {
-    print(
-        "MAIN_APP: Ignoring navigation from '$from' - already handling fall.");
-    return; // <-- The Lock!
-  }
-
-  print("MAIN_APP: Proceeding with navigation from '$from'. Setting lock.");
-  isCurrentlyHandlingFall = true; // <-- Set Lock!
-
-  // Ensure we have a navigator key and context
-  if (navigatorKey.currentState != null) {
-    navigatorKey.currentState?.pushNamedAndRemoveUntil(
-      '/home', (route) => false,
-      arguments: {'fallDetected': true, 'from': from},
-    );
-  } else {
-    print("MAIN_APP: Navigator key is null - cannot navigate.");
-    // Maybe set a flag to navigate once ready? But this shouldn't happen often.
-    isCurrentlyHandlingFall = false; // Release lock if can't navigate.
-  }
-}
 
 @pragma('vm:entry-point')
-void _onDidReceiveNotificationResponse(NotificationResponse response) {
-  print("MAIN_APP: Notification Tapped! Payload: ${response.payload}");
+void _onDidReceiveNotificationResponse(NotificationResponse response) async {
+  print("MAIN_APP: Notification Tapped! Payload: ${response
+      .payload}, Action ID: ${response.actionId}");
   if (response.payload == 'FALL_DETECTED_PAYLOAD') {
-    print("MAIN_APP: Fall payload detected. Attempting navigation via tap.");
-    _navigateToHomeWithFall(from: "Notification Tap");
+    print(
+        "MAIN_APP: Fall payload detected from notification tap. Setting '$fallPendingAlertKey'.");
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(fallPendingAlertKey, true);
+    await prefs.remove(fallHandledKey);
   }
 }
 
-Future<void> _showFallNotification() async {
-  print("MAIN_APP: Attempting to show FULL SCREEN fall notification.");
-  const AndroidNotificationDetails androidPlatformChannelSpecifics =
-  AndroidNotificationDetails(
-    fallNotificationChannelId, // Use the constant
-    'Fall Alerts',
-    channelDescription: 'High-priority notifications for Smart Cane fall detection.',
-    importance: Importance.max,
-    // Make sure this is max
-    priority: Priority.high,
-    // Make sure this is high
-    showWhen: true,
-    playSound: true,
-    enableVibration: true,
-    fullScreenIntent: true,
-    // Make sure this is true
-    ticker: '!!! FALL DETECTED !!!',
-  );
-  const NotificationDetails platformChannelSpecifics =
-  NotificationDetails(android: androidPlatformChannelSpecifics);
-
-  await flutterLocalNotificationsPlugin.show(
-      999, // Unique ID for fall notifications
-      '!!! FALL DETECTED !!!',
-      'A fall has been detected. Opening Smart Cane app...',
-      platformChannelSpecifics,
-      payload: 'FALL_DETECTED_PAYLOAD');
-  print("MAIN_APP: Full screen fall notification shown command issued.");
-}
-
-Future<void> initializeAppServices() async {
+// Renamed and modified: only configures, doesn't start. Start is now explicit.
+Future<void> configureBackgroundService() async {
   final service = FlutterBackgroundService();
 
   if (await Permission.notification.isDenied) {
@@ -108,16 +66,14 @@ Future<void> initializeAppServices() async {
   }
 
   const AndroidNotificationChannel fallChannel = AndroidNotificationChannel(
-    fallNotificationChannelId, // Use the constant
-    'Fall Alerts',
+    fallNotificationChannelId, 'Fall Alerts',
     description: 'High-priority notifications for Smart Cane fall detection.',
-    importance: Importance.max,
-    playSound: true,
+    importance: Importance.max, playSound: true,
   );
 
-  const AndroidNotificationChannel serviceChannel = AndroidNotificationChannel(
-    notificationChannelId, // From background_service_handler
-    notificationChannelName, // From background_service_handler
+  const AndroidNotificationChannel serviceChannelForNotifications = AndroidNotificationChannel(
+    notificationChannelId, notificationChannelName,
+    // From background_service_handler.dart
     description: 'This channel is used for Smart Cane background monitoring.',
     importance: Importance.low,
   );
@@ -125,20 +81,23 @@ Future<void> initializeAppServices() async {
   final androidLocalNotificationsPlugin = flutterLocalNotificationsPlugin
       .resolvePlatformSpecificImplementation<
       AndroidFlutterLocalNotificationsPlugin>();
-
-  await androidLocalNotificationsPlugin?.createNotificationChannel(fallChannel);
-  await androidLocalNotificationsPlugin?.createNotificationChannel(
-      serviceChannel);
+  if (androidLocalNotificationsPlugin != null) {
+    await androidLocalNotificationsPlugin.createNotificationChannel(
+        fallChannel);
+    await androidLocalNotificationsPlugin.createNotificationChannel(
+        serviceChannelForNotifications);
+  }
 
   await service.configure(
     androidConfiguration: AndroidConfiguration(
       onStart: onStart,
       autoStart: false,
+      // Explicitly false
       isForegroundMode: true,
       notificationChannelId: notificationChannelId,
-      // Use service channel ID here
       initialNotificationTitle: 'Smart Cane Service',
-      initialNotificationContent: 'Monitoring Inactive',
+      initialNotificationContent: 'Service Idle. Select a cane.',
+      // Updated initial content
       foregroundServiceNotificationId: notificationId,
     ),
     iosConfiguration: IosConfiguration(autoStart: false),
@@ -146,29 +105,85 @@ Future<void> initializeAppServices() async {
 
   service.on(triggerFallAlertUIEvent).listen((event) {
     print(
-        "MAIN_APP: Received '$triggerFallAlertUIEvent'. Showing notification & attempting navigation.");
+        "MAIN_APP: Received '$triggerFallAlertUIEvent' from background service.");
     _showFallNotification();
-    fallAlertStreamController.add(true); // Still signal via stream
+    if (!fallAlertStreamController.isClosed) {
+      fallAlertStreamController.add(true);
+    }
   });
 
   service.on(backgroundServiceConnectionUpdateEvent).listen((event) {
     if (event != null &&
         backgroundConnectionUpdateStreamController.hasListener &&
         !backgroundConnectionUpdateStreamController.isClosed) {
-      backgroundConnectionUpdateStreamController.add(event);
+      backgroundConnectionUpdateStreamController.add(
+          event as Map<String, dynamic>);
     }
   });
+  print(
+      "MAIN_APP: Background Service Configured (not yet started). UI listeners set up.");
+}
 
-  print("Background Service Configured and UI listeners set up.");
+Future<void> _showFallNotification() async {
+  print("MAIN_APP: Attempting to show FULL SCREEN fall notification.");
+  const AndroidNotificationDetails androidPlatformChannelSpecifics =
+  AndroidNotificationDetails(
+    fallNotificationChannelId, 'Fall Alerts',
+    channelDescription: 'High-priority notifications for Smart Cane fall detection.',
+    importance: Importance.max,
+    priority: Priority.high,
+    showWhen: true,
+    playSound: true,
+    enableVibration: true,
+    fullScreenIntent: true,
+    ticker: '!!! FALL DETECTED !!!',
+  );
+  const NotificationDetails platformChannelSpecifics =
+  NotificationDetails(android: androidPlatformChannelSpecifics);
+
+  await flutterLocalNotificationsPlugin.show(
+      fallNotificationId, '!!! FALL DETECTED !!!',
+      'A fall has been detected. Opening Smart Cane app...',
+      platformChannelSpecifics, payload: 'FALL_DETECTED_PAYLOAD');
+  print("MAIN_APP: Full screen fall notification shown command issued.");
+}
+
+void _navigateToHomeIfAppIsActive({required String from}) {
+  if (isCurrentlyHandlingFall) {
+    print(
+        "MAIN_APP (_navigateToHomeIfAppIsActive): Ignoring navigation from '$from' - already handling fall.");
+    return;
+  }
+  if (navigatorKey.currentState == null ||
+      navigatorKey.currentContext == null) {
+    print("MAIN_APP (_navigateToHomeIfAppIsActive): Navigator not ready.");
+    return;
+  }
+  final currentRoute = ModalRoute.of(navigatorKey.currentContext!);
+  if (currentRoute == null || !currentRoute.isCurrent) {
+    print(
+        "MAIN_APP (_navigateToHomeIfAppIsActive): App not in a state to navigate (not current route).");
+    return;
+  }
+  print(
+      "MAIN_APP (_navigateToHomeIfAppIsActive): Proceeding with navigation from '$from'. Setting lock.");
+  isCurrentlyHandlingFall = true;
+  navigatorKey.currentState?.pushNamedAndRemoveUntil(
+    '/home', (route) => false,
+    arguments: {'fallDetected': true, 'from': from, 'timestamp': DateTime
+        .now()
+        .millisecondsSinceEpoch},
+  );
 }
 
 Future<bool> _isUserSignedIn() async {
   return await GoogleSignIn().isSignedIn();
 }
 
-void main() async {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // We removed the native method channel handling as we use SharedPreferences now.
+  isCurrentlyHandlingFall = false;
+  print("MAIN: Global fall handling lock reset at app start/restart.");
 
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
@@ -178,21 +193,52 @@ void main() async {
       android: initializationSettingsAndroid);
 
   final prefs = await SharedPreferences.getInstance();
-  bool launchedDueToPendingFall = prefs.getBool('fall_pending_alert') ?? false;
-  if (launchedDueToPendingFall) {
-    print("MAIN: App launched, found 'fall_pending_alert' flag.");
-    await prefs.remove('fall_pending_alert'); // Clear it immediately
+  bool fallAlreadyHandledForThisLaunchDetail = prefs.getBool(fallHandledKey) ??
+      false;
+  bool pendingFallAlert = prefs.getBool(fallPendingAlertKey) ?? false;
+
+  if (pendingFallAlert) {
+    print("MAIN: App launch, found '$fallPendingAlertKey' flag. Clearing it.");
+    await prefs.remove(fallPendingAlertKey);
+    await prefs.remove(fallHandledKey);
+    fallAlreadyHandledForThisLaunchDetail = false;
   }
 
-  final NotificationAppLaunchDetails? notificationAppLaunchDetails = await flutterLocalNotificationsPlugin
-      .getNotificationAppLaunchDetails();
-  bool launchedViaFallNotificationTap = false;
-  if (notificationAppLaunchDetails?.didNotificationLaunchApp ?? false) {
-    if (notificationAppLaunchDetails!.notificationResponse?.payload ==
-        'FALL_DETECTED_PAYLOAD') {
-      launchedViaFallNotificationTap = true;
-      print("MAIN: App launched from TAPPING fall notification (Fallback).");
-    }
+  final NotificationAppLaunchDetails? notificationAppLaunchDetails =
+  await flutterLocalNotificationsPlugin.getNotificationAppLaunchDetails();
+  bool launchedByNotificationTapIntent = false;
+
+  if ((notificationAppLaunchDetails?.didNotificationLaunchApp ?? false) &&
+      notificationAppLaunchDetails!.notificationResponse?.payload ==
+          'FALL_DETECTED_PAYLOAD') {
+    print(
+        "MAIN: App was launched by a notification tap intent (payload matches).");
+    launchedByNotificationTapIntent = true;
+  }
+
+  bool isFallLaunch = false;
+  if (pendingFallAlert) {
+    print(
+        "MAIN: Determined 'isFallLaunch = true' due to '$fallPendingAlertKey'.");
+    isFallLaunch = true;
+    await prefs.setBool(fallHandledKey, true);
+  } else if (launchedByNotificationTapIntent &&
+      !fallAlreadyHandledForThisLaunchDetail) {
+    print(
+        "MAIN: Determined 'isFallLaunch = true' due to an unhandled notification tap launch detail.");
+    isFallLaunch = true;
+    await prefs.setBool(fallHandledKey, true);
+  } else if (launchedByNotificationTapIntent &&
+      fallAlreadyHandledForThisLaunchDetail) {
+    print(
+        "MAIN: Notification tap launch detail detected, but '$fallHandledKey' was true. Likely a hot restart. 'isFallLaunch' remains false.");
+    isFallLaunch = false;
+  }
+
+  if (!isFallLaunch && (prefs.getBool(fallHandledKey) ?? false)) {
+    print(
+        "MAIN: Not a fall launch, but '$fallHandledKey' was set (stale). Clearing it for the next actual notification launch.");
+    await prefs.remove(fallHandledKey);
   }
 
   await flutterLocalNotificationsPlugin.initialize(
@@ -200,18 +246,20 @@ void main() async {
     onDidReceiveNotificationResponse: _onDidReceiveNotificationResponse,
   );
 
-  await initializeAppServices();
+  // Configure the background service, but DO NOT start it here.
+  // HomeScreen will start it after permissions are granted and when scan is initiated.
+  await configureBackgroundService();
   bool signedIn = await _isUserSignedIn();
 
-  bool isFallLaunch = launchedDueToPendingFall ||
-      launchedViaFallNotificationTap;
   String determinedInitialRoute = isFallLaunch ? '/home_fall_launch' : (signedIn
       ? '/home'
       : '/login');
+  print(
+      "MAIN: Determined initial route: $determinedInitialRoute (isFallLaunch: $isFallLaunch, signedIn: $signedIn)");
 
   runApp(MyApp(
-      initialRoute: determinedInitialRoute,
-      launchedFromFallNotificationTap: isFallLaunch
+    initialRoute: determinedInitialRoute,
+    launchedFromFallNotificationTap: isFallLaunch,
   ));
 }
 
@@ -235,11 +283,11 @@ class _MyAppState extends State<MyApp> {
   @override
   void initState() {
     super.initState();
-    _fallAlertSubscription = onFallAlertTriggered.listen((isFall) {
+    _fallAlertSubscription = fallAlertStreamController.stream.listen((isFall) {
       if (isFall && mounted) {
         print(
-            "MyApp: Fall alert stream received. Attempting navigation via stream.");
-        _navigateToHomeWithFall(from: "Stream");
+            "MyApp State: Fall alert stream received while app is active. Attempting navigation.");
+        _navigateToHomeIfAppIsActive(from: "Stream Active App");
       }
     });
   }
@@ -247,8 +295,6 @@ class _MyAppState extends State<MyApp> {
   @override
   void dispose() {
     _fallAlertSubscription?.cancel();
-    backgroundConnectionUpdateStreamController.close();
-    fallAlertStreamController.close();
     super.dispose();
   }
 
@@ -268,11 +314,13 @@ class _MyAppState extends State<MyApp> {
               .of(context)
               ?.settings
               .arguments as Map<String, dynamic>?;
-          bool isFallLaunch = widget.launchedFromFallNotificationTap ||
+          bool isFallLaunchFromArgsOrProp = widget
+              .launchedFromFallNotificationTap ||
               (args?['fallDetected'] ?? false);
           print(
-              "MyApp routing to /home: isFallLaunch = $isFallLaunch, args = $args");
-          return HomeScreen(launchedFromFall: isFallLaunch);
+              "MyApp routing to /home: Effective isFallLaunch = $isFallLaunchFromArgsOrProp, args = $args, widget.launchedFromFallNotificationTap = ${widget
+                  .launchedFromFallNotificationTap}");
+          return HomeScreen(launchedFromFall: isFallLaunchFromArgsOrProp);
         },
         '/home_fall_launch': (context) =>
         const HomeScreen(launchedFromFall: true),
