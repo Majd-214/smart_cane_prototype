@@ -66,7 +66,15 @@ BluetoothDevice? _findDeviceById(List<BluetoothDevice> devices, String id) {
 
 @pragma('vm:entry-point')
 Future<void> onStart(ServiceInstance service) async {
-  DartPluginRegistrant.ensureInitialized();
+  try {
+    DartPluginRegistrant.ensureInitialized();
+    print("BG_SERVICE: DartPluginRegistrant.ensureInitialized() SUCCESS");
+  } catch (e, s) {
+    print(
+        "BG_SERVICE: ERROR in DartPluginRegistrant.ensureInitialized(): $e\n$s");
+    // If this fails, the isolate is doomed.
+  }
+
   WidgetsFlutterBinding
       .ensureInitialized(); // Usually not needed in background isolate unless using specific UI widgets
 

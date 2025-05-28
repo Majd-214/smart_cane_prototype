@@ -63,8 +63,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     _fallAlertStreamSubscriptionHomeScreen =
         onFallAlertTriggered.listen((isFall) {
-          if (isFall && mounted && !_isFallOverlayVisible &&
-              _permissionsGranted) {
+          if (isFall && mounted &&
+              !_isFallOverlayVisible) { // Check mounted and not already visible
             print(
                 "HomeScreen: Global Fall alert stream received. Showing overlay.");
         _showFallDetectionOverlay();
@@ -177,16 +177,10 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
       await _checkPermissionsAndInitialize();
 
-      if (!_initialFallCheckDone) {
-        _initialFallCheckDone = true;
-        print(
-            "HomeScreen: PostFrame (after permissions): launchedFromFall=${widget
-                .launchedFromFall}, overlayVisible=$_isFallOverlayVisible");
-      }
-      if (widget.launchedFromFall && !_isFallOverlayVisible &&
+      if (widget.launchedFromFall && mounted && !_isFallOverlayVisible &&
           _permissionsGranted) {
         print(
-            "HomeScreen: PostFrame: launchedFromFall is true and permissions granted. Showing overlay.");
+            "HomeScreen: PostFrame: launchedFromFall is true. Showing overlay.");
         _showFallDetectionOverlay();
       }
     });
@@ -290,7 +284,7 @@ class _HomeScreenState extends State<HomeScreen> {
     print("HomeScreen: SHOWING fall detection overlay.");
     setState(() {
       _isFallOverlayVisible = true;
-      _isFallCurrentlyDetectedByBg = true;
+      _isFallCurrentlyDetectedByBg = true; // Also update BG state display
     });
 
     flutterLocalNotificationsPlugin.cancel(fallNotificationId);
@@ -319,40 +313,30 @@ class _HomeScreenState extends State<HomeScreen> {
           transitionDuration: const Duration(milliseconds: 300)
       ),
     ).then((_) {
-      print(
-          "HomeScreen: Overlay Navigator.push().then() executed (overlay popped).");
-      if (mounted) {
-        if (_isFallOverlayVisible || _isFallCurrentlyDetectedByBg) {
-          print(
-              "HomeScreen: .then() calling _dismissAndResetOverlay (forcePop: false) as a failsafe.");
-          _dismissAndResetOverlay(forcePop: false);
-        }
-      }
+      // This 'then' runs when the overlay is POPPED.
+      // Ensure _dismissAndResetOverlay handles all cleanup.
+      print("HomeScreen: Overlay popped. Ensuring reset.");
+      _dismissAndResetOverlay(
+          forcePop: false); // Use false, as it's already popped.
     });
   }
 
   void _dismissAndResetOverlay({bool forcePop = true}) async {
     print(
-        "HomeScreen: Dismiss and Reset called. Force Pop: $forcePop, Current Overlay Visible: $_isFallOverlayVisible");
-
+        "HomeScreen: Dismiss and Reset. Force Pop: $forcePop, Visible: $_isFallOverlayVisible");
+    // Only pop if needed and possible
     if (forcePop && _isFallOverlayVisible && Navigator.canPop(context)) {
-      print("HomeScreen: Popping navigator...");
       Navigator.of(context).pop();
     }
-
-    print(
-        "HomeScreen: Releasing global fall handling lock (isCurrentlyHandlingFall = false).");
-    isCurrentlyHandlingFall = false;
-
-    if (mounted) {
-      if (_isFallOverlayVisible || _isFallCurrentlyDetectedByBg) {
-        setState(() {
-          _isFallOverlayVisible = false;
-          _isFallCurrentlyDetectedByBg = false;
-        });
-      }
+    // Ensure state is always reset even if pop wasn't needed
+    if (mounted && (_isFallOverlayVisible || _isFallCurrentlyDetectedByBg)) {
+      setState(() {
+        _isFallOverlayVisible = false;
+        _isFallCurrentlyDetectedByBg = false;
+      });
     }
-
+    // Reset global lock and tell background service.
+    isCurrentlyHandlingFall = false;
     _backgroundService.invoke(bgs.resetFallHandlingEvent);
 
     try {

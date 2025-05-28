@@ -106,7 +106,9 @@ Future<void> configureBackgroundService() async {
   service.on(triggerFallAlertUIEvent).listen((event) {
     print(
         "MAIN_APP: Received '$triggerFallAlertUIEvent' from background service.");
+    // 1. Always show the notification (this handles bringing the app up)
     _showFallNotification();
+    // 2. Always send the event via stream (HomeScreen will handle it if active)
     if (!fallAlertStreamController.isClosed) {
       fallAlertStreamController.add(true);
     }
@@ -128,14 +130,17 @@ Future<void> _showFallNotification() async {
   print("MAIN_APP: Attempting to show FULL SCREEN fall notification.");
   const AndroidNotificationDetails androidPlatformChannelSpecifics =
   AndroidNotificationDetails(
-    fallNotificationChannelId, 'Fall Alerts',
+    fallNotificationChannelId, 'Fall Alerts', // Ensure this ID is high-priority
     channelDescription: 'High-priority notifications for Smart Cane fall detection.',
     importance: Importance.max,
+    // MUST be max
     priority: Priority.high,
+    // MUST be high
     showWhen: true,
     playSound: true,
     enableVibration: true,
     fullScreenIntent: true,
+    // THE KEY!
     ticker: '!!! FALL DETECTED !!!',
   );
   const NotificationDetails platformChannelSpecifics =
@@ -146,34 +151,6 @@ Future<void> _showFallNotification() async {
       'A fall has been detected. Opening Smart Cane app...',
       platformChannelSpecifics, payload: 'FALL_DETECTED_PAYLOAD');
   print("MAIN_APP: Full screen fall notification shown command issued.");
-}
-
-void _navigateToHomeIfAppIsActive({required String from}) {
-  if (isCurrentlyHandlingFall) {
-    print(
-        "MAIN_APP (_navigateToHomeIfAppIsActive): Ignoring navigation from '$from' - already handling fall.");
-    return;
-  }
-  if (navigatorKey.currentState == null ||
-      navigatorKey.currentContext == null) {
-    print("MAIN_APP (_navigateToHomeIfAppIsActive): Navigator not ready.");
-    return;
-  }
-  final currentRoute = ModalRoute.of(navigatorKey.currentContext!);
-  if (currentRoute == null || !currentRoute.isCurrent) {
-    print(
-        "MAIN_APP (_navigateToHomeIfAppIsActive): App not in a state to navigate (not current route).");
-    return;
-  }
-  print(
-      "MAIN_APP (_navigateToHomeIfAppIsActive): Proceeding with navigation from '$from'. Setting lock.");
-  isCurrentlyHandlingFall = true;
-  navigatorKey.currentState?.pushNamedAndRemoveUntil(
-    '/home', (route) => false,
-    arguments: {'fallDetected': true, 'from': from, 'timestamp': DateTime
-        .now()
-        .millisecondsSinceEpoch},
-  );
 }
 
 Future<bool> _isUserSignedIn() async {
@@ -204,62 +181,34 @@ Future<void> main() async {
     fallAlreadyHandledForThisLaunchDetail = false;
   }
 
-  final NotificationAppLaunchDetails? notificationAppLaunchDetails =
-  await flutterLocalNotificationsPlugin.getNotificationAppLaunchDetails();
-  bool launchedByNotificationTapIntent = false;
-
-  if ((notificationAppLaunchDetails?.didNotificationLaunchApp ?? false) &&
-      notificationAppLaunchDetails!.notificationResponse?.payload ==
-          'FALL_DETECTED_PAYLOAD') {
-    print(
-        "MAIN: App was launched by a notification tap intent (payload matches).");
-    launchedByNotificationTapIntent = true;
-  }
-
-  bool isFallLaunch = false;
-  if (pendingFallAlert) {
-    print(
-        "MAIN: Determined 'isFallLaunch = true' due to '$fallPendingAlertKey'.");
-    isFallLaunch = true;
-    await prefs.setBool(fallHandledKey, true);
-  } else if (launchedByNotificationTapIntent &&
-      !fallAlreadyHandledForThisLaunchDetail) {
-    print(
-        "MAIN: Determined 'isFallLaunch = true' due to an unhandled notification tap launch detail.");
-    isFallLaunch = true;
-    await prefs.setBool(fallHandledKey, true);
-  } else if (launchedByNotificationTapIntent &&
-      fallAlreadyHandledForThisLaunchDetail) {
-    print(
-        "MAIN: Notification tap launch detail detected, but '$fallHandledKey' was true. Likely a hot restart. 'isFallLaunch' remains false.");
-    isFallLaunch = false;
-  }
-
-  if (!isFallLaunch && (prefs.getBool(fallHandledKey) ?? false)) {
-    print(
-        "MAIN: Not a fall launch, but '$fallHandledKey' was set (stale). Clearing it for the next actual notification launch.");
-    await prefs.remove(fallHandledKey);
-  }
-
   await flutterLocalNotificationsPlugin.initialize(
     initializationSettings,
     onDidReceiveNotificationResponse: _onDidReceiveNotificationResponse,
   );
 
-  // Configure the background service, but DO NOT start it here.
-  // HomeScreen will start it after permissions are granted and when scan is initiated.
+  final NotificationAppLaunchDetails? notificationAppLaunchDetails =
+  await flutterLocalNotificationsPlugin.getNotificationAppLaunchDetails();
+
+  // Determine if launched *specifically* from tapping our fall notification.
+  bool launchedFromFallTap =
+      (notificationAppLaunchDetails?.didNotificationLaunchApp ?? false) &&
+          notificationAppLaunchDetails!.notificationResponse?.payload ==
+              'FALL_DETECTED_PAYLOAD';
+
   await configureBackgroundService();
   bool signedIn = await _isUserSignedIn();
 
-  String determinedInitialRoute = isFallLaunch ? '/home_fall_launch' : (signedIn
-      ? '/home'
-      : '/login');
+  // If launched via tap, *always* go to home with a flag.
+  // Otherwise, normal login/home logic.
+  String determinedInitialRoute = signedIn ? '/home' : '/login';
+  bool passFallFlag = launchedFromFallTap;
+
   print(
-      "MAIN: Determined initial route: $determinedInitialRoute (isFallLaunch: $isFallLaunch, signedIn: $signedIn)");
+      "MAIN: Initial Route: $determinedInitialRoute, Fall Flag: $passFallFlag");
 
   runApp(MyApp(
     initialRoute: determinedInitialRoute,
-    launchedFromFallNotificationTap: isFallLaunch,
+    launchedFromFallNotificationTap: passFallFlag, // Pass the flag
   ));
 }
 
@@ -287,7 +236,6 @@ class _MyAppState extends State<MyApp> {
       if (isFall && mounted) {
         print(
             "MyApp State: Fall alert stream received while app is active. Attempting navigation.");
-        _navigateToHomeIfAppIsActive(from: "Stream Active App");
       }
     });
   }
@@ -314,16 +262,13 @@ class _MyAppState extends State<MyApp> {
               .of(context)
               ?.settings
               .arguments as Map<String, dynamic>?;
-          bool isFallLaunchFromArgsOrProp = widget
-              .launchedFromFallNotificationTap ||
+          // Use the flag from main() OR arguments (in case of stream-based nav)
+          bool isFallLaunch = widget.launchedFromFallNotificationTap ||
               (args?['fallDetected'] ?? false);
           print(
-              "MyApp routing to /home: Effective isFallLaunch = $isFallLaunchFromArgsOrProp, args = $args, widget.launchedFromFallNotificationTap = ${widget
-                  .launchedFromFallNotificationTap}");
-          return HomeScreen(launchedFromFall: isFallLaunchFromArgsOrProp);
+              "MyApp routing to /home: Effective isFallLaunch = $isFallLaunch");
+          return HomeScreen(launchedFromFall: isFallLaunch);
         },
-        '/home_fall_launch': (context) =>
-        const HomeScreen(launchedFromFall: true),
       },
       debugShowCheckedModeBanner: false,
     );
