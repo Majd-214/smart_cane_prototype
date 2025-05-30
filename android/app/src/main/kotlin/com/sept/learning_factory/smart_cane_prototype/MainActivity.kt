@@ -1,6 +1,5 @@
 package com.sept.learning_factory.smart_cane_prototype
 
-import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
@@ -12,94 +11,99 @@ import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
-class MainActivity : FlutterFragmentActivity() {
+class MainActivity : FlutterFragmentActivity() { // Changed to FlutterFragmentActivity if not already
     private val AUDIO_CHANNEL = "com.sept.learning_factory.smart_cane_prototype/audio"
-
-    // --- REMOVE: We won't use this channel or action anymore ---
-    // private val APP_LIFECYCLE_CHANNEL = "com.sept.learning_factory.smart_cane_prototype/app_lifecycle"
-    // const val FALL_DETECTED_ACTION = "com.sept.learning_factory.smart_cane_prototype.FALL_DETECTED_ACTION"
-    // private var appLifecycleMethodChannel: MethodChannel? = null
-    // ----------------------------------------------------------
-    private val TAG = "MainActivity"
+    private val TAG = "MainActivitySmartCane" // Changed TAG for clarity
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.d(TAG, "onCreate called, intent action: ${intent?.action}")
-        // --- ADD: Attempt to wake/unlock on create ---
-        handleScreenWakeUnlock()
-        // ------------------------------------------
+        handleScreenWakeUnlock() // Attempt to wake/unlock
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         Log.d(TAG, "configureFlutterEngine called")
 
-        // Audio Channel (Keep this)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, AUDIO_CHANNEL).setMethodCallHandler { call, result ->
             if (call.method == "setSpeakerphoneOn") {
-                // ... (keep speakerphone logic) ...
                 val on = call.argument<Boolean>("on")
                 if (on != null) {
                     try {
                         val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+                        // Explicitly set mode to MODE_IN_CALL each time before changing speakerphone state
+                        // This can help if the mode was changed by another app or system process.
                         audioManager.mode = AudioManager.MODE_IN_CALL
+                        Log.d(TAG, "Audio mode set to MODE_IN_CALL")
+
                         audioManager.isSpeakerphoneOn = on
-                        Log.d(TAG, "Speakerphone set to $on")
-                        result.success(true)
+                        Log.d(TAG, "Speakerphone set to $on. Current state: ${audioManager.isSpeakerphoneOn}")
+
+                        // Verify if it actually changed
+                        if (audioManager.isSpeakerphoneOn == on) {
+                            result.success(true)
+                        } else {
+                            Log.w(
+                                TAG,
+                                "Speakerphone state did not change as expected. Still: ${audioManager.isSpeakerphoneOn}"
+                            )
+                            result.error(
+                                "SPEAKERPHONE_UNCHANGED",
+                                "Speakerphone state did not change as expected.",
+                                null
+                            )
+                        }
+
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to set speakerphone", e)
                         result.error("SPEAKERPHONE_ERROR", "Failed to set speakerphone: ${e.message}", null)
                     }
                 } else {
+                    Log.e(TAG, "Argument 'on' is null for setSpeakerphoneOn")
                     result.error("INVALID_ARGUMENT", "Argument 'on' is null", null)
                 }
             } else {
                 result.notImplemented()
             }
         }
-
-        // --- REMOVE: Lifecycle channel setup and intent handling ---
-        // appLifecycleMethodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, APP_LIFECYCLE_CHANNEL)
-        // handleIntentOnFlutterReady(intent)
-        // -------------------------------------------------------
     }
-
-    // --- REMOVE: handleIntentOnFlutterReady ---
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         Log.d(TAG, "onNewIntent called, action: ${intent.action}")
-        setIntent(intent)
-        // --- ADD: Attempt to wake/unlock on new intent too ---
-        handleScreenWakeUnlock()
-        // -------------------------------------------------
-        // --- REMOVE: handleIntentOnFlutterReady(intent) ---
+        setIntent(intent) // Update the activity's intent
+        handleScreenWakeUnlock() // Attempt to wake/unlock again
     }
 
-    // --- ADD: Screen Waking Logic ---
     private fun handleScreenWakeUnlock() {
         Log.d(TAG, "Attempting to wake/unlock screen.")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(true)
-            setTurnScreenOn(true)
-            val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
-            // Note: requestDismissKeyguard might require user interaction on secure lock screens
-            keyguardManager.requestDismissKeyguard(this, null)
-        } else {
-            @Suppress("DEPRECATION")
-            window.addFlags(
-                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                        WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
-                        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-                        WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-            )
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                setShowWhenLocked(true)
+                setTurnScreenOn(true)
+                // val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+                // keyguardManager.requestDismissKeyguard(this, null) // This might need user interaction for secure lock screens
+            } else {
+                @Suppress("DEPRECATION")
+                window.addFlags(
+                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                            WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or // Potentially problematic without user interaction
+                            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                )
+            }
+            Log.d(TAG, "Screen wake/unlock flags applied.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in handleScreenWakeUnlock: ${e.message}")
         }
     }
-    // --------------------------------
 
     override fun onResume() {
         super.onResume()
         Log.d(TAG, "onResume called.")
-        // --- Optional: Could call handleScreenWakeUnlock() here too, but might be redundant ---
+        // It might be beneficial to try waking/unlocking here too,
+        // especially if the activity was paused and is now resuming during an active call sequence.
+        // handleScreenWakeUnlock()
     }
 }

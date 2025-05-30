@@ -45,16 +45,9 @@ Timer? _notificationCountdownTimer;
 int currentNotificationCountdownSeconds = DEFAULT_FALL_COUNTDOWN_SECONDS;
 const String INTERACTIVE_FALL_NOTIFICATION_PAYLOAD =
     'INTERACTIVE_FALL_DETECTED_PAYLOAD';
-const String INTERACTIVE_FALL_ACTION_IM_OK =
-    'INTERACTIVE_FALL_ACTION_IM_OK';
-const String INTERACTIVE_FALL_ACTION_CALL_EMERGENCY =
-    'INTERACTIVE_FALL_ACTION_CALL_EMERGENCY';
-const String INTERACTIVE_FALL_ACTION_IM_OK_FROM_SWIPE =
-    'INTERACTIVE_FALL_ACTION_IM_OK_FROM_SWIPE';
 const int INTERACTIVE_FALL_NOTIFICATION_ID = 1001; // Ensure unique ID
-Timer? _swipeDetectionTimer;
-const int DEFAULT_FALL_COUNTDOWN_SECONDS = 30;
 
+const int DEFAULT_FALL_COUNTDOWN_SECONDS = 30;
 
 void _navigateToHomeWithFall(
     {required String from, int? resumeCountdownSeconds}) {
@@ -104,34 +97,6 @@ void _navigateToHomeWithFall(
           resumeCountdownSeconds ?? DEFAULT_FALL_COUNTDOWN_SECONDS);
       prefs.setString('resume_fall_from', from);
     });
-  }
-}
-
-@pragma('vm:entry-point')
-Future<void> onDidReceiveBackgroundNotificationResponse(
-    NotificationResponse response) async {
-  print("MAIN_APP (Background): Notif Response: payload=${response
-      .payload}, actionId=${response.actionId}");
-  // Ensure essential services can be initialized if needed in this isolate context
-  // WidgetsFlutterBinding.ensureInitialized(); // Usually handled by plugin if isolate is spawned by it
-
-  if (response.actionId == INTERACTIVE_FALL_ACTION_IM_OK ||
-      response.actionId == INTERACTIVE_FALL_ACTION_CALL_EMERGENCY) {
-    await _handleInteractiveFallAction(response.actionId!);
-  } else if (response.payload == INTERACTIVE_FALL_NOTIFICATION_PAYLOAD) {
-    await _handleInteractiveFallAction(response.payload!);
-  }
-}
-
-@pragma('vm:entry-point')
-void _onDidReceiveNotificationResponse(NotificationResponse response) {
-  print("MAIN_APP (FG/Terminated): Notif Tapped! Payload: ${response
-      .payload}, ActionID: ${response.actionId}");
-  if (response.actionId == INTERACTIVE_FALL_ACTION_IM_OK ||
-      response.actionId == INTERACTIVE_FALL_ACTION_CALL_EMERGENCY) {
-    _handleInteractiveFallAction(response.actionId!);
-  } else if (response.payload == INTERACTIVE_FALL_NOTIFICATION_PAYLOAD) {
-    _handleInteractiveFallAction(response.payload!);
   }
 }
 
@@ -203,31 +168,22 @@ Future<void> _showOrUpdateInteractiveFallNotification(
   if (currentNotificationCountdownSeconds < 0 &&
       (_notificationCountdownTimer?.isActive ?? false)) {
     _notificationCountdownTimer?.cancel();
-    _swipeDetectionTimer?.cancel();
     if (isCurrentlyHandlingFall) {
-      await _handleInteractiveFallAction(
-          INTERACTIVE_FALL_ACTION_CALL_EMERGENCY);
+      await _handleInteractiveFallAction("CALL_EMERGENCY_INTERNAL_TIMEOUT");
     }
     return;
   }
 
-  final List<AndroidNotificationAction> actions = [
-    AndroidNotificationAction(
-      INTERACTIVE_FALL_ACTION_IM_OK, "I'm OK",
-      showsUserInterface: false, cancelNotification: true,
-      titleColor: AppTheme.accentColor, // Attempt to color "I'm OK"
-    ),
-    AndroidNotificationAction(
-      INTERACTIVE_FALL_ACTION_CALL_EMERGENCY, "Call Emergency",
-      showsUserInterface: false, cancelNotification: true,
-      icon: const DrawableResourceAndroidBitmap('ic_emergency_call_icon'),
-      titleColor: AppTheme.errorColor, // Attempt to color "Call Emergency"
-    ),
-  ];
+  // Main notification text (visible when compact and as title for expanded)
+  String mainTitle = "FALL DETECTED!";
+  // Body will be primarily for the expanded style via BigTextStyleInformation
+  // For compact view, we can try to fit more here, but it's limited.
+  String mainBody = "TAP TO RESPOND! EMS in ${currentNotificationCountdownSeconds}s";
 
   final AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
-    fallNotificationChannelId, 'Fall Alerts',
-    channelDescription: 'Critical fall alert. Attempts Full-Screen display.',
+    fallNotificationChannelId,
+    'Fall Alerts',
+    channelDescription: 'Critical fall alerts. Tap to respond or EMS will be called.',
     importance: Importance.max,
     priority: Priority.high,
     showWhen: true,
@@ -237,39 +193,62 @@ Future<void> _showOrUpdateInteractiveFallNotification(
     category: AndroidNotificationCategory.alarm,
     ongoing: true,
     autoCancel: false,
-    actions: actions,
-    showProgress: true,
-    maxProgress: DEFAULT_FALL_COUNTDOWN_SECONDS,
-    progress: currentNotificationCountdownSeconds,
-    // Correct for depletion
-    // invertProgress: true, // This was incorrect, remove
+
     color: AppTheme.errorColor,
-    // Sets accent color, may colorize background on some Android versions if `colorized` is true
     colorized: true,
-    // Attempt to use `color` for notification background
-    ticker: '!!! FALL DETECTED !!!',
+    // Makes background errorColor
+
+    // Small icon appears on the right (often status bar area, monochrome)
+    // This is standard. If you meant a large content icon on the right, that's not standard.
+    icon: 'ic_siren_drawable',
+    // Ensure this (without extension) matches your drawable file name
+    // This is the small icon.
+
+    largeIcon: const DrawableResourceAndroidBitmap('ic_falling_icon'),
+    // Large icon on the left.
+
+    showProgress: true,
+    // Ensure progress bar is shown
+    maxProgress: DEFAULT_FALL_COUNTDOWN_SECONDS,
+    progress: DEFAULT_FALL_COUNTDOWN_SECONDS -
+        currentNotificationCountdownSeconds,
+    // Correct progress direction
+    indeterminate: false,
+    // Make sure it's a determinate progress bar
+
+    ticker: 'FALL DETECTED! - ACTION REQUIRED',
+
+    // We'll use BigTextStyle and try to make it look like separate lines of large text.
+    // Android's rendering of HTML in notifications is limited.
     styleInformation: BigTextStyleInformation(
-      "!!! FALL DETECTED !!!", htmlFormatBigText: true,
-      contentTitle: "Action required within <b>$currentNotificationCountdownSeconds seconds</b>",
+      // The main body of the BigTextStyle.
+      // We will format this with HTML to try and achieve the desired look.
+      '<b>TAP TO RESPOND!</b><br>EMS Call In: <b>${currentNotificationCountdownSeconds}s</b>',
+      htmlFormatBigText: true,
+      // Enable HTML parsing for bigText
+      // contentTitle will be shown above the bigText.
+      contentTitle: '<b>FALL DETECTED!</b>',
+      // This will be the first line
       htmlFormatContentTitle: true,
-      summaryText: "Tap body to open app, or use action buttons.",
-      htmlFormatSummaryText: true,
+      // summaryText is often shown below or for grouped notifications, keep it concise.
+      summaryText: 'Tap alert to open app.',
+      // Simpler summary
+      htmlFormatSummaryText: false,
     ),
   );
 
   await flutterLocalNotificationsPlugin.show(
     INTERACTIVE_FALL_NOTIFICATION_ID,
-    "!!! FALL DETECTED !!!",
-    "Smart Cane: Action required in $currentNotificationCountdownSeconds seconds.",
+    mainTitle, // This is the title shown when notification is compact/in shade.
+    mainBody, // This is body shown when notification is compact/in shade.
     NotificationDetails(android: androidDetails),
     payload: INTERACTIVE_FALL_NOTIFICATION_PAYLOAD,
   );
-
-  if (isInitialShow) _startSwipeDetectionTimer();
 }
 
+
 void _startInteractiveNotificationCountdown() {
-  if (!isCurrentlyHandlingFall) { // If a cleanup just happened
+  if (!isCurrentlyHandlingFall) {
     print(
         "MAIN_APP: Start interactive countdown SKIPPED as fall is no longer active.");
     return;
@@ -281,16 +260,17 @@ void _startInteractiveNotificationCountdown() {
 
   WakelockPlus.enable().catchError((e) =>
       print("MAIN_APP: Wakelock enable error: $e"));
-  _playAlarmSoundInMain(); // Unified audio start
+  _playAlarmSoundInMain();
 
   _notificationCountdownTimer?.cancel();
-  _showOrUpdateInteractiveFallNotification(isInitialShow: true);
+  _showOrUpdateInteractiveFallNotification(
+      isInitialShow: true); // isInitialShow doesn't start swipe timer anymore
 
   _notificationCountdownTimer =
       Timer.periodic(const Duration(seconds: 1), (timer) {
         if (!isCurrentlyHandlingFall) {
           timer.cancel();
-          _swipeDetectionTimer?.cancel();
+          // _swipeDetectionTimer?.cancel(); // Remove swipe timer
           _cleanupInteractiveFallNotificationController(
               calledFromWithinTimer: true,
               reason: "Fall no longer active in countdown");
@@ -299,12 +279,12 @@ void _startInteractiveNotificationCountdown() {
         currentNotificationCountdownSeconds--;
         if (currentNotificationCountdownSeconds < 0) {
           timer.cancel();
-          _swipeDetectionTimer?.cancel();
+          // _swipeDetectionTimer?.cancel(); // Remove swipe timer
           if (isCurrentlyHandlingFall) {
             print(
                 "MAIN_APP: Interactive Countdown ended by timer. Triggering emergency.");
-            _handleInteractiveFallAction(
-                INTERACTIVE_FALL_ACTION_CALL_EMERGENCY);
+            // Use the internal constant for clarity
+            _handleInteractiveFallAction("CALL_EMERGENCY_INTERNAL_TIMEOUT");
           } else {
             _cleanupInteractiveFallNotificationController(
                 calledFromWithinTimer: true,
@@ -316,123 +296,78 @@ void _startInteractiveNotificationCountdown() {
       });
 }
 
-void _startSwipeDetectionTimer() {
-  _swipeDetectionTimer?.cancel();
-  _swipeDetectionTimer =
-      Timer(Duration(seconds: DEFAULT_FALL_COUNTDOWN_SECONDS - 2), () async {
-        if (!isCurrentlyHandlingFall ||
-            !(_notificationCountdownTimer?.isActive ?? false)) return;
-
-        final List<
-            ActiveNotification> activeNotifications = await flutterLocalNotificationsPlugin
-            .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
-            ?.getActiveNotifications() ?? [];
-        bool notificationStillPresent = activeNotifications.any((notif) =>
-        notif.id == INTERACTIVE_FALL_NOTIFICATION_ID);
-
-        if (!notificationStillPresent && isCurrentlyHandlingFall) {
-          print("MAIN_APP: Swipe inferred by timer. Treating as I'M OK.");
-          await _handleInteractiveFallAction(
-              INTERACTIVE_FALL_ACTION_IM_OK_FROM_SWIPE);
-        }
-      });
-}
-
 Future<void> _handleInteractiveFallAction(String actionOrPayload) async {
   print(
       "MAIN_APP: Handling interactive action: $actionOrPayload. Initial Fall active state: $isCurrentlyHandlingFall");
 
-  // If an action button was pressed, and the notification was presumably shown due to a fall,
-  // we should ensure isCurrentlyHandlingFall is true for the duration of this handler.
-  // This is to make sure the action is processed correctly even if there was a slight
-  // timing issue or state discrepancy with the global flag.
-  bool wasFallActiveInitially = isCurrentlyHandlingFall; // Capture state
+  bool wasFallActiveInitially = isCurrentlyHandlingFall;
 
-  if (actionOrPayload == INTERACTIVE_FALL_ACTION_IM_OK ||
-      actionOrPayload == INTERACTIVE_FALL_ACTION_CALL_EMERGENCY ||
-      actionOrPayload == INTERACTIVE_FALL_ACTION_IM_OK_FROM_SWIPE) {
+  // Simplified logic: if countdown ends, it's an emergency. If body tapped, it's a user interaction.
+  if (actionOrPayload == "CALL_EMERGENCY_INTERNAL_TIMEOUT" ||
+      actionOrPayload == INTERACTIVE_FALL_NOTIFICATION_PAYLOAD) {
     if (!isCurrentlyHandlingFall) {
       print(
-          "MAIN_APP: Action button '$actionOrPayload' tapped, but global fall flag was OFF. Temporarily setting ON for action processing.");
-      isCurrentlyHandlingFall =
-      true; // Assume active if an action button is pressed
+          "MAIN_APP: Action '$actionOrPayload' received, but global fall flag was OFF. Temporarily setting ON for action processing.");
+      isCurrentlyHandlingFall = true;
     }
   }
 
-  // Stop countdown timers immediately as an action is being processed.
   _notificationCountdownTimer?.cancel();
   _notificationCountdownTimer = null;
-  _swipeDetectionTimer?.cancel();
-  _swipeDetectionTimer = null;
+  // _swipeDetectionTimer?.cancel(); // Remove swipe timer
 
   final prefs = await SharedPreferences.getInstance();
-  final bleService = BleService();
+  final bleService = BleService(); // Assuming BleService is a singleton or easily accessible
 
   switch (actionOrPayload) {
-    case INTERACTIVE_FALL_ACTION_IM_OK:
-    case INTERACTIVE_FALL_ACTION_IM_OK_FROM_SWIPE:
-      print("MAIN_APP: Interactive Fall - I'M OK.");
-      // Sound stopped by cleanup.
-      bleService.resetFallDetectedState();
-      FlutterBackgroundService().invoke(resetFallHandlingEvent);
-      await prefs.remove('fall_pending_alert');
-      _cleanupInteractiveFallNotificationController(
-          reason: "I'M OK action/swipe"); // This will set isCurrentlyHandlingFall = false
+  // Case for when the countdown finishes (internally triggered)
+    case "CALL_EMERGENCY_INTERNAL_TIMEOUT":
+      print("MAIN_APP: Interactive Fall - CALL EMERGENCY (Timeout).");
+      // The actual call should be made from a foreground context if possible,
+      // or ensure the background service can reliably make it.
+      // For now, we assume the existing logic tries its best.
+      // If the app is in the foreground via HomeScreen, it will handle the call.
+      // If background, it's more complex. The current bleService.makePhoneCall might be attempted.
+
+      // Ensure the HomeScreen is brought up or attempts to make the call
+      // This navigation also serves to bring app to foreground if not already.
+      _navigateToHomeWithFall(
+          from: "Interactive Notification Timeout",
+          resumeCountdownSeconds: 0 // Countdown finished
+      );
+      // The overlay in HomeScreen will then trigger makePhoneCall via its onCallEmergency.
+
+      // Cleanup will be handled by confirmFallHandledByOverlay once HomeScreen's overlay calls it.
+      // However, to be safe, ensure some cleanup if navigation doesn't lead to overlay action.
+      // The key is that isCurrentlyHandlingFall remains true until overlay confirms.
+      // If overlay doesn't confirm (e.g. app killed before it can), a fallback is needed.
+      // For now, we rely on the overlay calling confirmFallHandledByOverlay.
+      // Sound is stopped by confirmFallHandledByOverlay or _cleanupInteractiveFallNotificationController.
       break;
 
-  // In lib/main.dart -> _handleInteractiveFallAction
-    case INTERACTIVE_FALL_ACTION_CALL_EMERGENCY:
-      print("MAIN_APP: Interactive Fall - CALL EMERGENCY action received.");
-      // Instead of calling directly:
-      // bleService.makePhoneCall('+19058028483');
-
-      // Option 1: Bring app to foreground to make the call
-      // This requires native code to launch the app's MainActivity with specific extras.
-      // For now, let's log that this path is taken. The actual implementation
-      // of bringing app to foreground and then calling is more involved.
-      print(
-          "MAIN_APP: TODO - Implement bringing app to foreground then making call.");
-      // For now, to ensure cleanup happens and avoid repeated notifications:
-      await prefs.setString('pending_action',
-          'call_emergency'); // Signal to app when it launches/resumes
-
-      // Attempt to launch the app - this uses the flutter_local_notifications' ability
-      // to launch the app when a notification is tapped. We're mimicking a body tap's effect
-      // to bring the app forward.
-      // The MainActivity will then need to check for 'pending_action'.
-      // This is a simplified approach; a dedicated PendingIntent in the action is better.
-
-      // For now, we will proceed with the cleanup and let the app handle the call when it comes to foreground.
-      // The actual call will need to be triggered from a foreground context (e.g., HomeScreen initState or didChangeAppLifecycleState).
-
-      bleService.resetFallDetectedState();
-      FlutterBackgroundService().invoke(resetFallHandlingEvent);
-      await prefs.remove('fall_pending_alert');
-      _cleanupInteractiveFallNotificationController(
-          reason: "Call Emergency action initiated");
-      break;
-
+  // Case for when the notification body is tapped
     case INTERACTIVE_FALL_NOTIFICATION_PAYLOAD:
       print(
           "MAIN_APP: Interactive Fall - Body tapped. Opening app overlay. Sound should continue.");
-      if (!wasFallActiveInitially &&
-          !isCurrentlyHandlingFall) { // If was off, and still is (no action button forced it on)
-        isCurrentlyHandlingFall =
-        true; // Body tap implies we are now handling it
+      if (!wasFallActiveInitially && !isCurrentlyHandlingFall) {
+        isCurrentlyHandlingFall = true;
         print("MAIN_APP: Fall handling activated by body tap.");
       }
+      // Cancel the current notification as the app's overlay will take over.
       await flutterLocalNotificationsPlugin.cancel(
-          INTERACTIVE_FALL_NOTIFICATION_ID); // Cancel current notification, overlay will take over
+          INTERACTIVE_FALL_NOTIFICATION_ID);
       _navigateToHomeWithFall(
           from: "Interactive Notification Tap",
           resumeCountdownSeconds: currentNotificationCountdownSeconds);
-      // Lock `isCurrentlyHandlingFall` remains true. Cleanup handled by overlay confirmation.
+      // isCurrentlyHandlingFall remains true. Cleanup is handled by confirmFallHandledByOverlay.
       break;
+
     default:
-      print("MAIN_APP: Unknown interactive fall action: $actionOrPayload");
-      if (isCurrentlyHandlingFall) { // Only cleanup if we thought we were handling something
-        _cleanupInteractiveFallNotificationController(reason: "Unknown action");
+      print(
+          "MAIN_APP: Unknown or unhandled interactive fall action: $actionOrPayload");
+      if (isCurrentlyHandlingFall) {
+        _cleanupInteractiveFallNotificationController(
+            reason: "Unknown or unhandled action: $actionOrPayload");
       }
   }
 }
@@ -442,11 +377,9 @@ void _cleanupInteractiveFallNotificationController(
   print(
       "MAIN_APP: Cleanup. Reason: $reason. Initial FallActive: $isCurrentlyHandlingFall");
 
-  if (!isCurrentlyHandlingFall &&
-      !calledFromOverlay) { // If already false and not from overlay (which expects it to be true)
+  if (!isCurrentlyHandlingFall && !calledFromOverlay) {
     print(
         "MAIN_APP: Cleanup ($reason), but global lock was already OFF and not an overlay confirmation. May be a redundant cleanup.");
-    // Still cancel timers and notification as a safety measure
   } else {
     isCurrentlyHandlingFall = false; // Set to false FIRST
     print("MAIN_APP: Global fall handling lock RELEASED by cleanup ($reason).");
@@ -454,20 +387,12 @@ void _cleanupInteractiveFallNotificationController(
 
   _notificationCountdownTimer?.cancel();
   _notificationCountdownTimer = null;
-  _swipeDetectionTimer?.cancel();
-  _swipeDetectionTimer = null;
+  // _swipeDetectionTimer?.cancel(); // Removed
 
   currentNotificationCountdownSeconds = DEFAULT_FALL_COUNTDOWN_SECONDS;
 
-  if (isCurrentlyHandlingFall) {
-    isCurrentlyHandlingFall = false;
-    print("MAIN_APP: Global fall handling lock RELEASED by cleanup ($reason).");
-  } else {
-    print("MAIN_APP: Cleanup ($reason), but global lock was already OFF.");
-  }
-
   flutterLocalNotificationsPlugin.cancel(INTERACTIVE_FALL_NOTIFICATION_ID);
-  _stopAlarmSoundInMain(); // Unified audio stop
+  _stopAlarmSoundInMain();
   WakelockPlus.disable().catchError((e) =>
       print("MAIN_APP: Wakelock disable error: $e"));
 }
@@ -603,8 +528,6 @@ void main() async {
 
   await flutterLocalNotificationsPlugin.initialize(
     initializationSettings,
-    onDidReceiveNotificationResponse: _onDidReceiveNotificationResponse,
-    onDidReceiveBackgroundNotificationResponse: onDidReceiveBackgroundNotificationResponse,
   );
 
   await initializeAppServices();
@@ -657,8 +580,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                   from: "Stream in MyApp (ensuring fall screen)",
                   resumeCountdownSeconds: currentNotificationCountdownSeconds);
             }
-      }
-    });
+          }
+        });
 
     if (widget.initialRoute == '/home_fall_launch') {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -679,23 +602,6 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     print("MyApp Lifecycle: $state. Fall active: $isCurrentlyHandlingFall");
-    if (state == AppLifecycleState.resumed) {
-      if (isCurrentlyHandlingFall &&
-          (_notificationCountdownTimer?.isActive ?? false)) {
-        flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
-            ?.getActiveNotifications().then((activeNotifications) {
-          bool notificationStillPresent = activeNotifications.any((
-              notif) => notif.id == INTERACTIVE_FALL_NOTIFICATION_ID);
-          if (!notificationStillPresent && isCurrentlyHandlingFall) {
-            print(
-                "MyApp resumed: Interactive notification GONE, fall was active. Treating as SWIPE/DISMISS.");
-            _handleInteractiveFallAction(
-                INTERACTIVE_FALL_ACTION_IM_OK_FROM_SWIPE);
-          }
-        });
-      }
-    }
   }
 
   @override
@@ -708,38 +614,91 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    /* ... same MaterialApp structure ... */
+    String currentInitialRoute = widget.initialRoute;
+    Map<String, dynamic>? homeRouteArgs;
+
+    // If a fall is actively being handled, we MUST ensure /home is launched with correct args.
+    if (isCurrentlyHandlingFall) {
+      // We want to navigate to HomeScreen and make it show the overlay.
+      // The arguments for HomeScreen are crucial.
+      currentInitialRoute = '/home'; // Force to home if handling a fall
+      homeRouteArgs = {
+        'fallDetected': true,
+        'from': 'Critical Fall Active',
+        // Generic source for this forced navigation
+        'resumeCountdownSeconds': (currentNotificationCountdownSeconds > 0 &&
+            currentNotificationCountdownSeconds <
+                DEFAULT_FALL_COUNTDOWN_SECONDS)
+            ? currentNotificationCountdownSeconds
+            : DEFAULT_FALL_COUNTDOWN_SECONDS,
+      };
+      print(
+          "MyApp build: Critical fall is active. Forcing /home with args: $homeRouteArgs");
+    }
+
     return MaterialApp(
       navigatorKey: navigatorKey,
       title: 'Smart Cane Prototype App',
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
       themeMode: ThemeMode.system,
-      initialRoute: widget.initialRoute,
-      routes: {
-        '/login': (context) => const LoginScreen(),
-        '/home': (context) {
-          final args = ModalRoute
-              .of(context)
-              ?.settings
-              .arguments as Map<String, dynamic>?;
-          bool isFallLaunchArgument = args?['fallDetected'] ?? false;
-          int resumeSeconds = args?['resumeCountdownSeconds'] as int? ??
-              (isFallLaunchArgument
-                  ? widget.resumeCountdownSecondsOnLaunch
-                  : DEFAULT_FALL_COUNTDOWN_SECONDS);
-          bool effectiveFallLaunch = widget.launchedFromFallSystemFlag ||
-              isFallLaunchArgument;
+      initialRoute: currentInitialRoute,
+      // Use the potentially overridden initial route
+      onGenerateRoute: (settings) { // Using onGenerateRoute for more control
+        if (settings.name == '/home') {
+          Map<String,
+              dynamic>? finalArgs = homeRouteArgs; // Args forced if fall is active
+
+          if (finalArgs == null &&
+              settings.arguments != null) { // If not forced, use passed args
+            finalArgs = settings.arguments as Map<String, dynamic>;
+          }
+          finalArgs ??= {}; // Ensure finalArgs is not null
+
+          // Determine effectiveFallLaunch and resumeSeconds based on the final arguments
+          // and global state, similar to your previous route builder.
+          bool isCriticalFallLaunchFromGlobal = isCurrentlyHandlingFall;
+          bool argumentIndicatesFall = finalArgs['fallDetected'] ?? false;
+
+          bool effectiveFallLaunch = isCriticalFallLaunchFromGlobal ||
+              widget.launchedFromFallSystemFlag || argumentIndicatesFall;
+
+          int resumeSeconds = DEFAULT_FALL_COUNTDOWN_SECONDS;
+          int? resumeSecondsFromArgs = finalArgs['resumeCountdownSeconds'] as int?;
+
+          if (effectiveFallLaunch) { // Only adjust countdown if it's a fall launch
+            if (isCriticalFallLaunchFromGlobal &&
+                currentNotificationCountdownSeconds > 0 &&
+                currentNotificationCountdownSeconds <
+                    DEFAULT_FALL_COUNTDOWN_SECONDS) {
+              resumeSeconds = currentNotificationCountdownSeconds;
+            } else if (resumeSecondsFromArgs != null) {
+              resumeSeconds = resumeSecondsFromArgs;
+            } else if (widget.launchedFromFallSystemFlag) {
+              resumeSeconds = widget.resumeCountdownSecondsOnLaunch;
+            }
+          }
+
           print(
-              "MyApp routing to /home: effectiveFallLaunch=$effectiveFallLaunch, resumeSecs=$resumeSeconds.");
-          return HomeScreen(
-            launchedFromFall: effectiveFallLaunch,
-            resumeCountdownSeconds: resumeSeconds,
+              "MyApp onGenerateRoute for /home: effectiveFallLaunch=$effectiveFallLaunch, resumeSecs=$resumeSeconds. Final Args: $finalArgs");
+
+          return MaterialPageRoute(
+            builder: (context) =>
+                HomeScreen(
+                  launchedFromFall: effectiveFallLaunch,
+                  resumeCountdownSeconds: resumeSeconds,
+                ),
+            settings: settings, // Pass along the original settings
           );
-        },
-        '/home_fall_launch': (context) {
+        }
+        if (settings.name == '/login') {
+          return MaterialPageRoute(builder: (context) => const LoginScreen());
+        }
+        // Handle /home_fall_launch if still needed, or remove if this new logic covers it.
+        if (settings.name == '/home_fall_launch') {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) {
+              // This should now also use the onGenerateRoute logic if it navigates to /home
               _navigateToHomeWithFall(
                   from: widget.launchFromReason ??
                       "Launch from /home_fall_launch",
@@ -747,10 +706,19 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                       .resumeCountdownSecondsOnLaunch);
             }
           });
-          return const Scaffold(
-              body: Center(child: CircularProgressIndicator()));
-        },
+          return MaterialPageRoute(builder: (context) =>
+          const Scaffold(
+              body: Center(child: CircularProgressIndicator())));
+        }
+        // Fallback or unknown route
+        if (widget.initialRoute == '/login' && !isCurrentlyHandlingFall)
+          return MaterialPageRoute(builder: (context) => const LoginScreen());
+        return MaterialPageRoute(builder: (context) =>
+            HomeScreen(
+              launchedFromFall: false,
+              resumeCountdownSeconds: DEFAULT_FALL_COUNTDOWN_SECONDS,));
       },
+      // Removed 'routes' map in favor of onGenerateRoute for /home
       debugShowCheckedModeBanner: false,
     );
   }
