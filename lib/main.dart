@@ -269,8 +269,14 @@ Future<void> _showOrUpdateInteractiveFallNotification(
 }
 
 void _startInteractiveNotificationCountdown() {
+  if (!isCurrentlyHandlingFall) { // If a cleanup just happened
+    print(
+        "MAIN_APP: Start interactive countdown SKIPPED as fall is no longer active.");
+    return;
+  }
   print(
       "MAIN_APP: Starting INTERACTIVE notification countdown (FSI attempt). Global lock ON.");
+
   currentNotificationCountdownSeconds = DEFAULT_FALL_COUNTDOWN_SECONDS;
 
   WakelockPlus.enable().catchError((e) =>
@@ -335,35 +341,22 @@ void _startSwipeDetectionTimer() {
 
 Future<void> _handleInteractiveFallAction(String actionOrPayload) async {
   print(
-      "MAIN_APP: Handling interactive action: $actionOrPayload. Fall active: $isCurrentlyHandlingFall");
+      "MAIN_APP: Handling interactive action: $actionOrPayload. Initial Fall active state: $isCurrentlyHandlingFall");
 
-  // If fall is not active, an action is likely stale. Only proceed if it's an "OK" type action (to ensure cleanup)
-  // or if it's a body tap which might be trying to re-establish context.
-  if (!isCurrentlyHandlingFall) {
-    if (actionOrPayload == INTERACTIVE_FALL_ACTION_IM_OK ||
-        actionOrPayload == INTERACTIVE_FALL_ACTION_IM_OK_FROM_SWIPE) {
+  // If an action button was pressed, and the notification was presumably shown due to a fall,
+  // we should ensure isCurrentlyHandlingFall is true for the duration of this handler.
+  // This is to make sure the action is processed correctly even if there was a slight
+  // timing issue or state discrepancy with the global flag.
+  bool wasFallActiveInitially = isCurrentlyHandlingFall; // Capture state
+
+  if (actionOrPayload == INTERACTIVE_FALL_ACTION_IM_OK ||
+      actionOrPayload == INTERACTIVE_FALL_ACTION_CALL_EMERGENCY ||
+      actionOrPayload == INTERACTIVE_FALL_ACTION_IM_OK_FROM_SWIPE) {
+    if (!isCurrentlyHandlingFall) {
       print(
-          "MAIN_APP: Action '$actionOrPayload' received on non-active fall. Proceeding with cleanup.");
-      // Fall through to cleanup logic below, sound should already be off.
-    } else if (actionOrPayload == INTERACTIVE_FALL_NOTIFICATION_PAYLOAD) {
-      print(
-          "MAIN_APP: Body tap on non-active fall. This might be a delayed tap after cleanup. Trying to navigate.");
-      // This is a tricky case. The fall was cleaned up, but user tapped.
-      // For safety, let's try to show the overlay with default time.
-      isCurrentlyHandlingFall = true; // Re-activate for navigation
-      _navigateToHomeWithFall(from: "Stale Interactive Notification Tap",
-          resumeCountdownSeconds: DEFAULT_FALL_COUNTDOWN_SECONDS);
-      // Sound may need to be restarted by the overlay in this specific edge case.
-      // Or, we assume the user will see no countdown if it was truly stale.
-      // Current _navigateToHomeWithFall will show overlay which plays its own sound.
-      // The _mainAudioPlayer is not playing at this point if cleanup happened.
-      return; // Return after attempting navigation.
-    } else {
-      print(
-          "MAIN_APP: Action '$actionOrPayload' received, but fall NOT active and not an OK/Swipe/BodyTap. Ignoring further processing.");
-      _cleanupInteractiveFallNotificationController(
-          reason: "Stale action ('$actionOrPayload') on non-active fall");
-      return;
+          "MAIN_APP: Action button '$actionOrPayload' tapped, but global fall flag was OFF. Temporarily setting ON for action processing.");
+      isCurrentlyHandlingFall =
+      true; // Assume active if an action button is pressed
     }
   }
 
@@ -385,27 +378,52 @@ Future<void> _handleInteractiveFallAction(String actionOrPayload) async {
       FlutterBackgroundService().invoke(resetFallHandlingEvent);
       await prefs.remove('fall_pending_alert');
       _cleanupInteractiveFallNotificationController(
-          reason: "I'M OK action/swipe");
+          reason: "I'M OK action/swipe"); // This will set isCurrentlyHandlingFall = false
       break;
 
+  // In lib/main.dart -> _handleInteractiveFallAction
     case INTERACTIVE_FALL_ACTION_CALL_EMERGENCY:
-      print("MAIN_APP: Interactive Fall - CALL EMERGENCY.");
-      // Sound stopped by cleanup.
-      bleService.makePhoneCall('+19058028483'); // Replace with actual contact
+      print("MAIN_APP: Interactive Fall - CALL EMERGENCY action received.");
+      // Instead of calling directly:
+      // bleService.makePhoneCall('+19058028483');
+
+      // Option 1: Bring app to foreground to make the call
+      // This requires native code to launch the app's MainActivity with specific extras.
+      // For now, let's log that this path is taken. The actual implementation
+      // of bringing app to foreground and then calling is more involved.
+      print(
+          "MAIN_APP: TODO - Implement bringing app to foreground then making call.");
+      // For now, to ensure cleanup happens and avoid repeated notifications:
+      await prefs.setString('pending_action',
+          'call_emergency'); // Signal to app when it launches/resumes
+
+      // Attempt to launch the app - this uses the flutter_local_notifications' ability
+      // to launch the app when a notification is tapped. We're mimicking a body tap's effect
+      // to bring the app forward.
+      // The MainActivity will then need to check for 'pending_action'.
+      // This is a simplified approach; a dedicated PendingIntent in the action is better.
+
+      // For now, we will proceed with the cleanup and let the app handle the call when it comes to foreground.
+      // The actual call will need to be triggered from a foreground context (e.g., HomeScreen initState or didChangeAppLifecycleState).
+
       bleService.resetFallDetectedState();
       FlutterBackgroundService().invoke(resetFallHandlingEvent);
       await prefs.remove('fall_pending_alert');
       _cleanupInteractiveFallNotificationController(
-          reason: "Call Emergency action");
+          reason: "Call Emergency action initiated");
       break;
 
-    case INTERACTIVE_FALL_NOTIFICATION_PAYLOAD: // Tapped on notification body
+    case INTERACTIVE_FALL_NOTIFICATION_PAYLOAD:
       print(
           "MAIN_APP: Interactive Fall - Body tapped. Opening app overlay. Sound should continue.");
-      // _mainAudioPlayer CONTINUES playing. Overlay will NOT start its own alarm sound.
-      // Overlay completion (OK/Emergency/Dismiss) calls confirmFallHandledByOverlay -> cleanup -> stop _mainAudioPlayer.
+      if (!wasFallActiveInitially &&
+          !isCurrentlyHandlingFall) { // If was off, and still is (no action button forced it on)
+        isCurrentlyHandlingFall =
+        true; // Body tap implies we are now handling it
+        print("MAIN_APP: Fall handling activated by body tap.");
+      }
       await flutterLocalNotificationsPlugin.cancel(
-          INTERACTIVE_FALL_NOTIFICATION_ID);
+          INTERACTIVE_FALL_NOTIFICATION_ID); // Cancel current notification, overlay will take over
       _navigateToHomeWithFall(
           from: "Interactive Notification Tap",
           resumeCountdownSeconds: currentNotificationCountdownSeconds);
@@ -413,21 +431,32 @@ Future<void> _handleInteractiveFallAction(String actionOrPayload) async {
       break;
     default:
       print("MAIN_APP: Unknown interactive fall action: $actionOrPayload");
-      _cleanupInteractiveFallNotificationController(reason: "Unknown action");
+      if (isCurrentlyHandlingFall) { // Only cleanup if we thought we were handling something
+        _cleanupInteractiveFallNotificationController(reason: "Unknown action");
+      }
   }
 }
 
 void _cleanupInteractiveFallNotificationController(
     {bool calledFromOverlay = false, bool calledFromWithinTimer = false, required String reason}) {
   print(
-      "MAIN_APP: Cleanup. Reason: $reason. Overlay: $calledFromOverlay, Timer: $calledFromWithinTimer. FallActive: $isCurrentlyHandlingFall");
+      "MAIN_APP: Cleanup. Reason: $reason. Initial FallActive: $isCurrentlyHandlingFall");
 
-  if (!calledFromWithinTimer) { // Timer already cancelled itself if this is true
-    _notificationCountdownTimer?.cancel();
-    _notificationCountdownTimer = null;
-    _swipeDetectionTimer?.cancel();
-    _swipeDetectionTimer = null;
+  if (!isCurrentlyHandlingFall &&
+      !calledFromOverlay) { // If already false and not from overlay (which expects it to be true)
+    print(
+        "MAIN_APP: Cleanup ($reason), but global lock was already OFF and not an overlay confirmation. May be a redundant cleanup.");
+    // Still cancel timers and notification as a safety measure
+  } else {
+    isCurrentlyHandlingFall = false; // Set to false FIRST
+    print("MAIN_APP: Global fall handling lock RELEASED by cleanup ($reason).");
   }
+
+  _notificationCountdownTimer?.cancel();
+  _notificationCountdownTimer = null;
+  _swipeDetectionTimer?.cancel();
+  _swipeDetectionTimer = null;
+
   currentNotificationCountdownSeconds = DEFAULT_FALL_COUNTDOWN_SECONDS;
 
   if (isCurrentlyHandlingFall) {

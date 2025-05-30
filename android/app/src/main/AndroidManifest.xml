@@ -73,6 +73,10 @@
         <meta-data
                 android:name="flutterEmbedding"
                 android:value="2"/>
+
+        <receiver
+                android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver"
+                android:exported="false"/>
     </application>
     <queries>
         <intent>

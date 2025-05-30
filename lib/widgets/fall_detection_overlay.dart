@@ -83,27 +83,6 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
     _currentBackgroundColor = AppTheme.errorColor;
     int totalDurationSeconds = DEFAULT_FALL_COUNTDOWN_SECONDS;
 
-    _progressAnimationController = AnimationController(
-      vsync: this, duration: Duration(seconds: totalDurationSeconds),
-    )
-      ..addListener(() {
-        /* ... same ... */
-      if (mounted && !_rushProgressAnimationController.isAnimating && _isTimerActive) {
-        setState(() => _currentAnimationProgress = 1.0 - _progressAnimationController.value);
-      }
-    });
-
-    if (widget.initialCountdownSeconds < totalDurationSeconds &&
-        widget.initialCountdownSeconds >= 0) {
-      double startValue = (totalDurationSeconds.toDouble() -
-          widget.initialCountdownSeconds.toDouble()) /
-          totalDurationSeconds.toDouble();
-      _progressAnimationController.value = startValue;
-      _currentAnimationProgress = 1.0 - startValue;
-    } else if (widget.initialCountdownSeconds <= 0) {
-      _progressAnimationController.value = 1.0;
-      _currentAnimationProgress = 0.0;
-    }
     // ... (rest of controller initializations are the same) ...
     _rushProgressAnimationController =
     AnimationController(vsync: this, duration: _rushProgressDuration,)
@@ -128,6 +107,29 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
           }
         }
       });
+
+    _progressAnimationController = AnimationController(
+      vsync: this, duration: Duration(seconds: totalDurationSeconds),
+    )
+      ..addListener(() {
+        /* ... same ... */
+      if (mounted && !_rushProgressAnimationController.isAnimating && _isTimerActive) {
+        setState(() => _currentAnimationProgress = 1.0 - _progressAnimationController.value);
+      }
+    });
+
+    if (widget.initialCountdownSeconds < totalDurationSeconds &&
+        widget.initialCountdownSeconds >= 0) {
+      double startValue = (totalDurationSeconds.toDouble() -
+          widget.initialCountdownSeconds.toDouble()) /
+          totalDurationSeconds.toDouble();
+      _progressAnimationController.value = startValue;
+      _currentAnimationProgress = 1.0 - startValue;
+    } else if (widget.initialCountdownSeconds <= 0) {
+      _progressAnimationController.value = 1.0;
+      _currentAnimationProgress = 0.0;
+    }
+
     _zoomIconAnimationController = AnimationController(vsync: this, duration: _zoomIconDuration);
     _zoomIconScaleAnimation = Tween<double>(begin: 0.3, end: 1.0).animate(
         CurvedAnimation(
