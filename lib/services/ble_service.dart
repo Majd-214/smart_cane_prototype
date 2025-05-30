@@ -697,7 +697,7 @@ class BleService {
     }
     bool? res = await FlutterPhoneDirectCaller.callNumber(phoneNumber);
     if (res == true) {
-      await Future.delayed(const Duration(seconds: 3));
+      await Future.delayed(const Duration(seconds: 4));
       await _setSpeakerphoneOn(true);
     } else {
       print("Failed to initiate direct call.");
