@@ -244,20 +244,31 @@ class _HomeScreenState extends State<HomeScreen> {
         pageBuilder: (context, animation, secondaryAnimation) =>
             FallDetectionOverlay(
               initialCountdownSeconds: initialSeconds,
-              // Pass the initial seconds
+              // callAlreadyInitiated: callAlreadyInitiated, // Remove this if you added it from previous thoughts
               onImOk: () {
                 print("HomeScreen: Overlay 'I'm OK' tapped.");
+                emergencyCallInitiatedByNotificationTimeout =
+                false; // Reset flag
                 _dismissAndResetOverlayLogically(isOk: true);
               },
               onCallEmergency: () {
-                print("HomeScreen: Overlay 'Call Emergency' tapped.");
-                _bleService.makePhoneCall(
-                    '+19058028483'); // Replace with actual number
+                print(
+                    "HomeScreen: Overlay 'onCallEmergency' callback triggered.");
+                if (!emergencyCallInitiatedByNotificationTimeout) { // Check global flag
+                  print(
+                      "HomeScreen: Call NOT YET initiated by notification timeout. Initiating call from overlay action.");
+                  _bleService.makePhoneCall(
+                      '+19058028483'); // TODO: Use configurable number
+                } else {
+                  print(
+                      "HomeScreen: Call WAS ALREADY initiated by notification timeout. Overlay action confirms/updates UI.");
+                }
+                // Whether called or not here, this path means the emergency sequence is proceeding.
+                // Reset the flag as the overlay interaction is now handling the finalization of this state.
+                emergencyCallInitiatedByNotificationTimeout = false;
                 _dismissAndResetOverlayLogically(isOk: false);
               },
             ),
-        transitionsBuilder: (context, animation, secondaryAnimation, child) =>
-            FadeTransition(opacity: animation, child: child),
       ),
     ).then((_) { // This .then() executes when the overlay is popped.
       print(

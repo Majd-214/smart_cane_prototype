@@ -683,8 +683,7 @@ class BleService {
           .request()
           .isGranted) {
         print("Phone permission denied.");
-        // Consider showing a message to the user or guiding them to settings
-        await openAppSettings(); // Helper from permission_handler
+        await openAppSettings();
         return;
       }
     }
@@ -695,29 +694,43 @@ class BleService {
 
     if (res == true) {
       print("Call initiated. Waiting to attempt speakerphone activation...");
-      // Increased delay slightly, and added a small initial delay before the main one
-      await Future.delayed(const Duration(seconds: 2)); // Short initial delay
-      // Wait a bit longer for the call to connect before trying to turn on speakerphone
-      // This is still a heuristic. 10 seconds is a guess.
-      await Future.delayed(const Duration(seconds: 10));
-      print("Attempting to set speakerphone ON after delay.");
-      await _setSpeakerphoneOn(true);
+      // Try a shorter initial delay, then a follow-up attempt
+      await Future.delayed(const Duration(seconds: 2)); // 2 seconds
+      print("Attempting to set speakerphone ON (1st attempt).");
+      bool firstAttemptSuccess = await _setSpeakerphoneOn(true);
+
+      if (!firstAttemptSuccess) { // Optional: only try again if first attempt seemed to fail based on return
+        await Future.delayed(
+            const Duration(seconds: 3)); // Additional 3 seconds
+        print("Attempting to set speakerphone ON (2nd attempt).");
+        await _setSpeakerphoneOn(true);
+      }
     } else {
       print("Failed to initiate direct call to $phoneNumber.");
-      // Optionally, inform the user that the call could not be placed.
     }
   }
 
-  Future<void> _setSpeakerphoneOn(bool on) async {
+  Future<bool> _setSpeakerphoneOn(bool on) async {
+    // Modified to return bool
     try {
       print("Invoking MethodChannel setSpeakerphoneOn: $on");
-      await _audioChannel.invokeMethod('setSpeakerphoneOn', {'on': on});
-      print("MethodChannel setSpeakerphoneOn invoked successfully.");
+      final bool? success = await _audioChannel.invokeMethod(
+          'setSpeakerphoneOn', {'on': on});
+      if (success == true) {
+        print("MethodChannel setSpeakerphoneOn reported success.");
+        return true;
+      } else {
+        print(
+            "MethodChannel setSpeakerphoneOn reported failure or did not return true.");
+        return false;
+      }
     } on PlatformException catch (e) {
       print("Failed to set speakerphone via MethodChannel: '${e
           .message}'. Details: ${e.details}");
+      return false;
     } catch (e) {
       print("An unexpected error occurred in _setSpeakerphoneOn: $e");
+      return false;
     }
   }
 

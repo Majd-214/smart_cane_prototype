@@ -49,6 +49,9 @@ const int INTERACTIVE_FALL_NOTIFICATION_ID = 1001; // Ensure unique ID
 
 const int DEFAULT_FALL_COUNTDOWN_SECONDS = 30;
 
+// Near other global variables like isCurrentlyHandlingFall
+bool emergencyCallInitiatedByNotificationTimeout = false;
+
 void _navigateToHomeWithFall(
     {required String from, int? resumeCountdownSeconds}) {
   bool alreadyOnFallScreen = false;
@@ -69,32 +72,62 @@ void _navigateToHomeWithFall(
     return;
   }
 
+  // Set or confirm fall lock
   if (!isCurrentlyHandlingFall) {
     isCurrentlyHandlingFall = true;
     print(
-        "MAIN_APP: Navigating for fall from '$from'. Lock was OFF, now SET. Resume: ${resumeCountdownSeconds ??
-            DEFAULT_FALL_COUNTDOWN_SECONDS}");
+        "MAIN_APP: Navigating for fall from '$from'. Lock was OFF, now SET. Effective Resume: ${resumeCountdownSeconds ??
+            currentNotificationCountdownSeconds}");
   } else {
     print(
-        "MAIN_APP: Navigating for fall from '$from'. Lock already ON. Resume: ${resumeCountdownSeconds ??
-            DEFAULT_FALL_COUNTDOWN_SECONDS}");
+        "MAIN_APP: Navigating for fall from '$from'. Lock already ON. Effective Resume: ${resumeCountdownSeconds ??
+            currentNotificationCountdownSeconds}");
   }
 
+  // **MODIFICATION START**
+  // If we are navigating to show the full overlay,
+  // ensure any active notification countdown is stopped and notification cleared.
+  // This is because the overlay will now be the primary interface.
+  _notificationCountdownTimer?.cancel();
+  _notificationCountdownTimer = null;
+  flutterLocalNotificationsPlugin.cancel(INTERACTIVE_FALL_NOTIFICATION_ID);
+  // Sound and Wakelock should continue as the overlay is now active or will be.
+  // The overlay's own cleanup logic (via confirmFallHandledByOverlay) will handle these later.
+  // **MODIFICATION END**
+
   if (navigatorKey.currentState != null) {
+    print(
+        "MAIN_APP: navigatorKey IS available. Attempting navigation for '$from'.");
     navigatorKey.currentState?.pushNamedAndRemoveUntil(
       '/home', (route) => false,
       arguments: {
-        'fallDetected': true, 'from': from,
-        'resumeCountdownSeconds': resumeCountdownSeconds ??
-            DEFAULT_FALL_COUNTDOWN_SECONDS,
+        'fallDetected': true,
+        'from': from,
+        // Pass the centrally managed countdown value if available and valid, otherwise default or the provided one.
+        'resumeCountdownSeconds': (resumeCountdownSeconds != null &&
+            resumeCountdownSeconds >= 0)
+            ? resumeCountdownSeconds
+            : (currentNotificationCountdownSeconds >= 0 &&
+            currentNotificationCountdownSeconds <=
+                DEFAULT_FALL_COUNTDOWN_SECONDS)
+            ? currentNotificationCountdownSeconds
+            : DEFAULT_FALL_COUNTDOWN_SECONDS,
       },
     );
   } else {
-    print("MAIN_APP: Nav key null for '$from'. Setting prefs for launch.");
+    print(
+        "MAIN_APP: navigatorKey IS NULL for '$from'. Setting prefs for launch.");
     SharedPreferences.getInstance().then((prefs) {
       prefs.setBool('resume_fall_overlay_on_launch', true);
+      // Use the centrally managed countdown value or the provided one for prefs
       prefs.setInt('resume_countdown_seconds',
-          resumeCountdownSeconds ?? DEFAULT_FALL_COUNTDOWN_SECONDS);
+          (resumeCountdownSeconds != null && resumeCountdownSeconds >= 0)
+              ? resumeCountdownSeconds
+              : (currentNotificationCountdownSeconds >= 0 &&
+              currentNotificationCountdownSeconds <=
+                  DEFAULT_FALL_COUNTDOWN_SECONDS)
+              ? currentNotificationCountdownSeconds
+              : DEFAULT_FALL_COUNTDOWN_SECONDS);
       prefs.setString('resume_fall_from', from);
     });
   }
@@ -231,9 +264,9 @@ Future<void> _showOrUpdateInteractiveFallNotification(
       // This will be the first line
       htmlFormatContentTitle: true,
       // summaryText is often shown below or for grouped notifications, keep it concise.
-      summaryText: 'Tap alert to open app.',
-      // Simpler summary
-      htmlFormatSummaryText: false,
+      // summaryText: 'Tap alert to open app.',
+      // // Simpler summary
+      // htmlFormatSummaryText: false,
     ),
   );
 
@@ -246,52 +279,57 @@ Future<void> _showOrUpdateInteractiveFallNotification(
   );
 }
 
-
 void _startInteractiveNotificationCountdown() {
   if (!isCurrentlyHandlingFall) {
     print(
         "MAIN_APP: Start interactive countdown SKIPPED as fall is no longer active.");
     return;
   }
-  print(
-      "MAIN_APP: Starting INTERACTIVE notification countdown (FSI attempt). Global lock ON.");
 
+  // If this function is called, it means the notification is the intended primary alert view.
+  // We reset the global countdown to the default for this notification sequence.
+  // If an overlay was previously active, its state would have been handled by its own lifecycle
+  // and cleanup (confirmFallHandledByOverlay).
   currentNotificationCountdownSeconds = DEFAULT_FALL_COUNTDOWN_SECONDS;
+  print(
+      "MAIN_APP: Starting INTERACTIVE notification countdown. Global lock ON. Countdown reset to default for notification.");
+
 
   WakelockPlus.enable().catchError((e) =>
       print("MAIN_APP: Wakelock enable error: $e"));
-  _playAlarmSoundInMain();
+  _playAlarmSoundInMain(); // Ensure sound is playing
 
-  _notificationCountdownTimer?.cancel();
+  _notificationCountdownTimer
+      ?.cancel(); // Cancel any existing timer before starting a new one
   _showOrUpdateInteractiveFallNotification(
-      isInitialShow: true); // isInitialShow doesn't start swipe timer anymore
+      isInitialShow: true);
 
   _notificationCountdownTimer =
       Timer.periodic(const Duration(seconds: 1), (timer) {
         if (!isCurrentlyHandlingFall) {
+          // This condition means the fall was resolved (e.g., user tapped "I'm OK" on an overlay
+          // that might have been brought up, or another cleanup occurred).
           timer.cancel();
-          // _swipeDetectionTimer?.cancel(); // Remove swipe timer
           _cleanupInteractiveFallNotificationController(
               calledFromWithinTimer: true,
-              reason: "Fall no longer active in countdown");
+              reason: "Fall no longer active in notification countdown");
           return;
         }
         currentNotificationCountdownSeconds--;
         if (currentNotificationCountdownSeconds < 0) {
           timer.cancel();
-          // _swipeDetectionTimer?.cancel(); // Remove swipe timer
+          // Check isCurrentlyHandlingFall again, as it might change during the last second.
           if (isCurrentlyHandlingFall) {
             print(
                 "MAIN_APP: Interactive Countdown ended by timer. Triggering emergency.");
-            // Use the internal constant for clarity
             _handleInteractiveFallAction("CALL_EMERGENCY_INTERNAL_TIMEOUT");
           } else {
             _cleanupInteractiveFallNotificationController(
                 calledFromWithinTimer: true,
-                reason: "Countdown <0, but fall not active");
+                reason: "Notification countdown <0, but fall became inactive");
           }
         } else {
-          _showOrUpdateInteractiveFallNotification();
+          _showOrUpdateInteractiveFallNotification(); // Update notification content
         }
       });
 }
@@ -300,101 +338,99 @@ Future<void> _handleInteractiveFallAction(String actionOrPayload) async {
   print(
       "MAIN_APP: Handling interactive action: $actionOrPayload. Initial Fall active state: $isCurrentlyHandlingFall");
 
-  bool wasFallActiveInitially = isCurrentlyHandlingFall;
-
-  // Simplified logic: if countdown ends, it's an emergency. If body tapped, it's a user interaction.
-  if (actionOrPayload == "CALL_EMERGENCY_INTERNAL_TIMEOUT" ||
-      actionOrPayload == INTERACTIVE_FALL_NOTIFICATION_PAYLOAD) {
-    if (!isCurrentlyHandlingFall) {
-      print(
-          "MAIN_APP: Action '$actionOrPayload' received, but global fall flag was OFF. Temporarily setting ON for action processing.");
-      isCurrentlyHandlingFall = true;
-    }
+  if (!isCurrentlyHandlingFall &&
+      (actionOrPayload == INTERACTIVE_FALL_NOTIFICATION_PAYLOAD ||
+          actionOrPayload == "CALL_EMERGENCY_INTERNAL_TIMEOUT")) {
+    isCurrentlyHandlingFall = true;
+    print(
+        "MAIN_APP: Fall handling (re)activated by interactive action: $actionOrPayload");
+  } else if (!isCurrentlyHandlingFall) {
+    print(
+        "MAIN_APP: Action '$actionOrPayload' received, but fall not active. Cleaning up and ignoring.");
+    _cleanupInteractiveFallNotificationController(
+        reason: "Fall not active for action: $actionOrPayload");
+    return;
   }
 
-  _notificationCountdownTimer?.cancel();
-  _notificationCountdownTimer = null;
-  // _swipeDetectionTimer?.cancel(); // Remove swipe timer
-
-  final prefs = await SharedPreferences.getInstance();
-  final bleService = BleService(); // Assuming BleService is a singleton or easily accessible
+  final bleService = BleService();
 
   switch (actionOrPayload) {
-  // Case for when the countdown finishes (internally triggered)
     case "CALL_EMERGENCY_INTERNAL_TIMEOUT":
       print("MAIN_APP: Interactive Fall - CALL EMERGENCY (Timeout).");
-      // The actual call should be made from a foreground context if possible,
-      // or ensure the background service can reliably make it.
-      // For now, we assume the existing logic tries its best.
-      // If the app is in the foreground via HomeScreen, it will handle the call.
-      // If background, it's more complex. The current bleService.makePhoneCall might be attempted.
+      _notificationCountdownTimer?.cancel();
+      _notificationCountdownTimer = null;
+      // Don't cancel the notification immediately; let the user see it if the call takes time to initiate.
+      // It will be cleaned up by _cleanupInteractiveFallNotificationController eventually.
 
-      // Ensure the HomeScreen is brought up or attempts to make the call
-      // This navigation also serves to bring app to foreground if not already.
+      if (!emergencyCallInitiatedByNotificationTimeout) {
+        print(
+            "MAIN_APP: Directly initiating emergency call due to notification timeout.");
+        emergencyCallInitiatedByNotificationTimeout = true; // Set flag
+        bleService.makePhoneCall(
+            '+19058028483'); // TODO: Use a configurable number
+      } else {
+        print(
+            "MAIN_APP: Emergency call already flagged as initiated by notification timeout, not calling again from here.");
+      }
+
+      // Still navigate to home to show the state (e.g., "Calling emergency...")
       _navigateToHomeWithFall(
-          from: "Interactive Notification Timeout",
-          resumeCountdownSeconds: 0 // Countdown finished
+          from: "Interactive Notification Timeout - Call Initiated",
+          resumeCountdownSeconds: 0
       );
-      // The overlay in HomeScreen will then trigger makePhoneCall via its onCallEmergency.
-
-      // Cleanup will be handled by confirmFallHandledByOverlay once HomeScreen's overlay calls it.
-      // However, to be safe, ensure some cleanup if navigation doesn't lead to overlay action.
-      // The key is that isCurrentlyHandlingFall remains true until overlay confirms.
-      // If overlay doesn't confirm (e.g. app killed before it can), a fallback is needed.
-      // For now, we rely on the overlay calling confirmFallHandledByOverlay.
-      // Sound is stopped by confirmFallHandledByOverlay or _cleanupInteractiveFallNotificationController.
       break;
 
-  // Case for when the notification body is tapped
-    case INTERACTIVE_FALL_NOTIFICATION_PAYLOAD:
+    case INTERACTIVE_FALL_NOTIFICATION_PAYLOAD: // Notification body tap
       print(
           "MAIN_APP: Interactive Fall - Body tapped. Opening app overlay. Sound should continue.");
-      if (!wasFallActiveInitially && !isCurrentlyHandlingFall) {
-        isCurrentlyHandlingFall = true;
-        print("MAIN_APP: Fall handling activated by body tap.");
-      }
-      // Cancel the current notification as the app's overlay will take over.
+      _notificationCountdownTimer?.cancel();
+      _notificationCountdownTimer = null;
+      // Cancel the notification because the full overlay will take over.
       await flutterLocalNotificationsPlugin.cancel(
           INTERACTIVE_FALL_NOTIFICATION_ID);
+
       _navigateToHomeWithFall(
           from: "Interactive Notification Tap",
           resumeCountdownSeconds: currentNotificationCountdownSeconds);
-      // isCurrentlyHandlingFall remains true. Cleanup is handled by confirmFallHandledByOverlay.
       break;
 
     default:
       print(
           "MAIN_APP: Unknown or unhandled interactive fall action: $actionOrPayload");
-      if (isCurrentlyHandlingFall) {
-        _cleanupInteractiveFallNotificationController(
-            reason: "Unknown or unhandled action: $actionOrPayload");
-      }
+      _cleanupInteractiveFallNotificationController(
+          reason: "Unknown or unhandled action: $actionOrPayload");
   }
 }
 
 void _cleanupInteractiveFallNotificationController(
-    {bool calledFromOverlay = false, bool calledFromWithinTimer = false, required String reason}) {
+    {bool calledFromOverlay = false,
+      bool calledFromWithinTimer = false,
+      required String reason}) {
   print(
-      "MAIN_APP: Cleanup. Reason: $reason. Initial FallActive: $isCurrentlyHandlingFall");
+      "MAIN_APP: Cleanup. Reason: $reason. Initial FallActive: $isCurrentlyHandlingFall. CallInitiatedFlag: $emergencyCallInitiatedByNotificationTimeout");
 
   if (!isCurrentlyHandlingFall && !calledFromOverlay) {
     print(
         "MAIN_APP: Cleanup ($reason), but global lock was already OFF and not an overlay confirmation. May be a redundant cleanup.");
   } else {
-    isCurrentlyHandlingFall = false; // Set to false FIRST
-    print("MAIN_APP: Global fall handling lock RELEASED by cleanup ($reason).");
+    isCurrentlyHandlingFall = false;
+    print(
+        "MAIN_APP: Global fall handling lock RELEASED by cleanup ($reason).");
   }
 
   _notificationCountdownTimer?.cancel();
   _notificationCountdownTimer = null;
-  // _swipeDetectionTimer?.cancel(); // Removed
 
   currentNotificationCountdownSeconds = DEFAULT_FALL_COUNTDOWN_SECONDS;
 
   flutterLocalNotificationsPlugin.cancel(INTERACTIVE_FALL_NOTIFICATION_ID);
   _stopAlarmSoundInMain();
-  WakelockPlus.disable().catchError((e) =>
-      print("MAIN_APP: Wakelock disable error: $e"));
+  WakelockPlus.disable()
+      .catchError((e) => print("MAIN_APP: Wakelock disable error: $e"));
+
+  emergencyCallInitiatedByNotificationTimeout = false; // **ADD THIS RESET**
+  print(
+      "MAIN_APP: Cleanup also reset _emergencyCallInitiatedByNotificationTimeout.");
 }
 
 void confirmFallHandledByOverlay() {
@@ -469,13 +505,18 @@ Future<void> initializeAppServices() async {
   });
 
   service.on(backgroundServiceConnectionUpdateEvent).listen((event) {
-    /* ... same ... */
+    if (event != null &&
+        backgroundConnectionUpdateStreamController.hasListener &&
+        !backgroundConnectionUpdateStreamController.isClosed) {
+      backgroundConnectionUpdateStreamController.add(
+          event as Map<String, dynamic>);
+    }
   });
   print("MAIN_APP: Background Service Configured.");
 }
 
 Future<bool> _isUserSignedIn() async {
-  /* ... same ... */ return await GoogleSignIn().isSignedIn();
+  return await GoogleSignIn().isSignedIn();
 }
 
 void main() async {
@@ -483,28 +524,31 @@ void main() async {
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await _initializeMainAudioPlayer();
 
-  const AndroidInitializationSettings initializationSettingsAndroid = AndroidInitializationSettings(
-      '@mipmap/ic_launcher');
-  const DarwinInitializationSettings initializationSettingsIOS = DarwinInitializationSettings(
+  const AndroidInitializationSettings initializationSettingsAndroid =
+  AndroidInitializationSettings('@mipmap/ic_launcher');
+  const DarwinInitializationSettings initializationSettingsIOS =
+  DarwinInitializationSettings(
     requestAlertPermission: true,
     requestBadgePermission: true,
     requestSoundPermission: true,
   );
   const InitializationSettings initializationSettings = InitializationSettings(
-    android: initializationSettingsAndroid, iOS: initializationSettingsIOS,
+    android: initializationSettingsAndroid,
+    iOS: initializationSettingsIOS,
   );
 
-  // ... (prefs and notificationAppLaunchDetails logic remains same) ...
   final prefs = await SharedPreferences.getInstance();
-  bool launchedDueToPendingFall = prefs.getBool(
-      'resume_fall_overlay_on_launch') ?? false;
+  bool launchedDueToPendingFall =
+      prefs.getBool('resume_fall_overlay_on_launch') ?? false;
   String? launchFrom = prefs.getString('resume_fall_from');
-  int resumeSeconds = prefs.getInt('resume_countdown_seconds') ??
-      DEFAULT_FALL_COUNTDOWN_SECONDS;
+  int resumeSeconds =
+      prefs.getInt('resume_countdown_seconds') ??
+          DEFAULT_FALL_COUNTDOWN_SECONDS;
 
   if (launchedDueToPendingFall) {
     print(
-        "MAIN: App launched with pending fall flag from: $launchFrom. Resume secs: $resumeSeconds");
+        "MAIN: App launched with SharedPreferences pending fall flag from: $launchFrom. Resume secs: $resumeSeconds");
+    // Clear them once read
     await prefs.remove('resume_fall_overlay_on_launch');
     await prefs.remove('resume_fall_from');
     await prefs.remove('resume_countdown_seconds');
@@ -513,47 +557,101 @@ void main() async {
   final NotificationAppLaunchDetails? notificationAppLaunchDetails =
   await flutterLocalNotificationsPlugin.getNotificationAppLaunchDetails();
 
+  bool appLaunchedFromInteractiveFallNotification = false;
+
   if (notificationAppLaunchDetails?.didNotificationLaunchApp ?? false) {
     final response = notificationAppLaunchDetails!.notificationResponse;
     if (response != null) {
-      print("MAIN: App launched by notification tap. Payload: ${response
-          .payload}, Action: ${response.actionId}");
+      print(
+          "MAIN: App launched by notification tap. Payload: ${response
+              .payload}, Action: ${response.actionId}, Input: ${response
+              .input}");
       if (response.payload == INTERACTIVE_FALL_NOTIFICATION_PAYLOAD &&
           response.actionId == null) {
-        launchedDueToPendingFall = true;
-        launchFrom = "Interactive Notification Tap (App Launch)";
+        appLaunchedFromInteractiveFallNotification = true;
+        launchFrom =
+            launchFrom ??
+                "Interactive Notification Tap (App Launch)"; // Prioritize existing launchFrom if any
+        if (!isCurrentlyHandlingFall) {
+          isCurrentlyHandlingFall = true;
+          print(
+              "MAIN: Fall handling lock SET due to app launch from notification tap.");
+        }
+        // If launched from notification, use default countdown, or what was last known for notifications
+        // For simplicity now, let's ensure currentNotificationCountdownSeconds reflects this state.
+        currentNotificationCountdownSeconds = DEFAULT_FALL_COUNTDOWN_SECONDS;
+        resumeSeconds = currentNotificationCountdownSeconds;
       }
     }
   }
 
   await flutterLocalNotificationsPlugin.initialize(
     initializationSettings,
+    onDidReceiveNotificationResponse:
+        (NotificationResponse notificationResponse) async {
+      print(
+          "MAIN: Notification tapped while app running (onDidReceiveNotificationResponse). Payload: ${notificationResponse
+              .payload}, Action: ${notificationResponse.actionId}");
+      if (notificationResponse.payload ==
+          INTERACTIVE_FALL_NOTIFICATION_PAYLOAD &&
+          notificationResponse.actionId == null) {
+        if (!isCurrentlyHandlingFall) {
+          isCurrentlyHandlingFall = true;
+          print(
+              "MAIN: Fall handling lock SET due to notification tap (app running - onDidReceiveNotificationResponse).");
+        }
+        _navigateToHomeWithFall(
+            from:
+            "Interactive Notification Tap (App Running - onDidReceiveNotificationResponse)",
+            resumeCountdownSeconds: currentNotificationCountdownSeconds);
+      }
+    },
   );
 
   await initializeAppServices();
   bool signedIn = await _isUserSignedIn();
+
+  // Determine initial route based on signed-in state first
   String determinedInitialRoute = signedIn ? '/home' : '/login';
-  if (launchedDueToPendingFall) determinedInitialRoute = '/home_fall_launch';
+
+  // **CORRECTED LOGIC START**
+  // Now, check if we need to override for a fall-related launch
+  // based on flags calculated within main()
+  bool shouldLaunchIntoFall = appLaunchedFromInteractiveFallNotification ||
+      launchedDueToPendingFall;
+
+  if (shouldLaunchIntoFall) {
+    determinedInitialRoute =
+    '/home_fall_launch'; // Always use the special fall launch route if these flags are true
+    print(
+        "MAIN: Overriding initial route for fall. Determined: $determinedInitialRoute, Reason: $launchFrom, ResumeSecs: $resumeSeconds, appLaunchedFromInteractiveFallNotification: $appLaunchedFromInteractiveFallNotification, launchedDueToPendingFall: $launchedDueToPendingFall");
+  }
+  // **CORRECTED LOGIC END**
+
+  // Prepare arguments for MyApp
+  // The 'launchedFromFallSystemFlag' passed to MyApp should reflect the decision made here.
+  bool finalLaunchedFromFallSystemFlag = shouldLaunchIntoFall;
+  int finalResumeSecondsOnLaunch = resumeSeconds;
+  String? finalLaunchFromReason = launchFrom;
 
   runApp(MyApp(
     initialRoute: determinedInitialRoute,
-    launchedFromFallSystemFlag: launchedDueToPendingFall,
-    resumeCountdownSecondsOnLaunch: resumeSeconds,
-    launchFromReason: launchFrom,
+    launchedFromFallSystemFlag: finalLaunchedFromFallSystemFlag,
+    resumeCountdownSecondsOnLaunch: finalResumeSecondsOnLaunch,
+    launchFromReason: finalLaunchFromReason,
   ));
 }
 
 class MyApp extends StatefulWidget {
-  /* ... same ... */
   final String initialRoute;
-  final bool launchedFromFallSystemFlag;
+  final bool launchedFromFallSystemFlag; // This seems to cover 'appLaunchedFromInteractiveFallNotification'
   final int resumeCountdownSecondsOnLaunch;
   final String? launchFromReason;
 
   const MyApp({
     super.key,
     required this.initialRoute,
-    required this.launchedFromFallSystemFlag,
+    required this.launchedFromFallSystemFlag, // Keep this
     required this.resumeCountdownSecondsOnLaunch,
     this.launchFromReason,
   });
@@ -583,15 +681,24 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
           }
         });
 
-    if (widget.initialRoute == '/home_fall_launch') {
+    // This logic seems mostly fine for when the app is explicitly told to launch into a fall state
+    if (widget.initialRoute == '/home_fall_launch' ||
+        widget.launchedFromFallSystemFlag) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
           print(
-              "MyApp initState: Initial route /home_fall_launch. Navigating. Reason: ${widget
+              "MyApp initState: Initial route is fall-related. Navigating. Reason: ${widget
                   .launchFromReason}, Secs: ${widget
                   .resumeCountdownSecondsOnLaunch}");
+          if (!isCurrentlyHandlingFall) {
+            // Ensure fall lock is set if we are about to navigate to fall screen
+            isCurrentlyHandlingFall = true;
+            print(
+                "MyApp initState: Fall handling lock SET for /home_fall_launch or launchedFromFallSystemFlag.");
+          }
           _navigateToHomeWithFall(
-              from: widget.launchFromReason ?? "Launch via /home_fall_launch",
+              from: widget.launchFromReason ??
+                  "Launch via Fall System Flag or /home_fall_launch",
               resumeCountdownSeconds: widget.resumeCountdownSecondsOnLaunch);
         }
       });

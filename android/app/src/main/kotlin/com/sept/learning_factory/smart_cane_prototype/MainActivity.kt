@@ -2,6 +2,7 @@ package com.sept.learning_factory.smart_cane_prototype
 
 import android.content.Context
 import android.content.Intent
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
@@ -31,30 +32,29 @@ class MainActivity : FlutterFragmentActivity() { // Changed to FlutterFragmentAc
                 if (on != null) {
                     try {
                         val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-
-                        // Explicitly set mode to MODE_IN_CALL each time before changing speakerphone state
-                        // This can help if the mode was changed by another app or system process.
-                        audioManager.mode = AudioManager.MODE_IN_CALL
-                        Log.d(TAG, "Audio mode set to MODE_IN_CALL")
-
+                        Log.d(TAG, "Audio mode set to MODE_IN_CALL for speakerphone operation.")
+                        val audioFocusRequest =
+                            AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT).build()
+                        val res = audioManager.requestAudioFocus(audioFocusRequest)
+                        if (res == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                            Log.d(TAG, "Audio focus granted for speakerphone.")
+                            audioManager.mode = AudioManager.MODE_IN_CALL
+                            // Then set speakerphone
+                        } else {
+                            Log.w(TAG, "Audio focus not granted for speakerphone.")
+                        }
                         audioManager.isSpeakerphoneOn = on
                         Log.d(TAG, "Speakerphone set to $on. Current state: ${audioManager.isSpeakerphoneOn}")
 
-                        // Verify if it actually changed
                         if (audioManager.isSpeakerphoneOn == on) {
-                            result.success(true)
+                            result.success(true) // Confirm success
                         } else {
                             Log.w(
                                 TAG,
-                                "Speakerphone state did not change as expected. Still: ${audioManager.isSpeakerphoneOn}"
+                                "Speakerphone state did not change as expected. Expected: $on, Actual: ${audioManager.isSpeakerphoneOn}"
                             )
-                            result.error(
-                                "SPEAKERPHONE_UNCHANGED",
-                                "Speakerphone state did not change as expected.",
-                                null
-                            )
+                            result.success(false) // Report actual failure to change
                         }
-
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to set speakerphone", e)
                         result.error("SPEAKERPHONE_ERROR", "Failed to set speakerphone: ${e.message}", null)

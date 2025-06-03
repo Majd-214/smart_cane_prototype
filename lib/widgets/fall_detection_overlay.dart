@@ -29,7 +29,7 @@ class FallDetectionOverlay extends StatefulWidget {
 
 class _FallDetectionOverlayState extends State<FallDetectionOverlay>
     with TickerProviderStateMixin {
-  late Timer _secondUpdaterTimer;
+  Timer? _secondUpdaterTimer;
   late int _remainingSeconds;
   bool _isTimerActive = true;
 
@@ -216,7 +216,7 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
     _actionSubmitted = true;
     _isTimerActive = false;
 
-    _secondUpdaterTimer.cancel();
+    _secondUpdaterTimer?.cancel();
     _progressAnimationController.stop();
     // No local audio to stop for the alarm: await _stopOverlayAlarmSound();
     _triggerHapticFeedback(FeedbackType.success);
@@ -260,7 +260,7 @@ class _FallDetectionOverlayState extends State<FallDetectionOverlay>
     // No local alarm audio player to stop or dispose here.
     // Haptics are on-demand.
 
-    _secondUpdaterTimer.cancel();
+    _secondUpdaterTimer?.cancel();
     _progressAnimationController.dispose();
     _rushProgressAnimationController.dispose();
     _zoomIconAnimationController.dispose();
