@@ -258,7 +258,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   print(
                       "HomeScreen: Call NOT YET initiated by notification timeout. Initiating call from overlay action.");
                   _bleService.makePhoneCall(
-                      '+19058028483'); // TODO: Use configurable number
+                      '+19058028483',
+                      emergencyContactNumber: '+19058028483'); // TODO: Use configurable number
                 } else {
                   print(
                       "HomeScreen: Call WAS ALREADY initiated by notification timeout. Overlay action confirms/updates UI.");

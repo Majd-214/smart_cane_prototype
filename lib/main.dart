@@ -41,6 +41,8 @@ final AudioPlayer _mainAudioPlayer = AudioPlayer();
 bool _mainAlarmSoundPlaying = false;
 bool _mainAudioPlayerInitialized = false;
 
+// String? contactNumber = await getEmergencyContactNumberFromPrefs(); // You'd need to implement this
+
 Timer? _notificationCountdownTimer;
 int currentNotificationCountdownSeconds = DEFAULT_FALL_COUNTDOWN_SECONDS;
 const String INTERACTIVE_FALL_NOTIFICATION_PAYLOAD =
@@ -371,7 +373,8 @@ Future<void> _handleInteractiveFallAction(String actionOrPayload) async {
             "MAIN_APP: Directly initiating emergency call due to notification timeout.");
         emergencyCallInitiatedByNotificationTimeout = true; // Set flag
         bleService.makePhoneCall(
-            '+19058028483'); // TODO: Use a configurable number
+            '+19058028483', emergencyContactNumber: '+19058028483');
+        // TODO: Use a configurable number
       } else {
         print(
             "MAIN_APP: Emergency call already flagged as initiated by notification timeout, not calling again from here.");

@@ -8,6 +8,8 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:smart_cane_prototype/services/background_service_handler.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:url_launcher/url_launcher.dart'; // Already in your project
 
 // ... (Keep your existing UUIDs and enums)
 const String SMART_CANE_SERVICE_UUID = "A5A20D8A-E137-4B30-9F30-1A7A91579C9C";
@@ -116,6 +118,52 @@ class BleService {
     return locStatus.isGranted &&
         scanStatus.isGranted &&
         connectStatus.isGranted;
+  }
+
+  Future<String?> _getCurrentLocationLink() async {
+    try {
+      bool serviceEnabled;
+      LocationPermission permission;
+
+      // Test if location services are enabled.
+      serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        print('Location services are disabled.');
+        // Optionally, prompt user to enable location services
+        // await Geolocator.openLocationSettings();
+        return null;
+      }
+
+      permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          print('Location permissions are denied');
+          return null;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        print(
+            'Location permissions are permanently denied, we cannot request permissions.');
+        // Optionally, guide user to app settings
+        // await Geolocator.openAppSettings();
+        return null;
+      }
+
+      // When we reach here, permissions are granted and we can
+      // continue accessing the position of the device.
+      Position position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 15) // Add a timeout
+      );
+
+      return 'https://www.google.com/maps?q=${position.latitude},${position
+          .longitude}';
+    } catch (e) {
+      print('Error getting location: $e');
+      return null;
+    }
   }
 
   Future<void> initialize() async {
@@ -520,22 +568,85 @@ class BleService {
       _calibrationStatusController.add(_currentInternalCalibrationState);
     }
   }
-  Future<void> makePhoneCall(String phoneNumber) async {
+
+  Future<void> makePhoneCall(String phoneNumber,
+      {String? emergencyContactNumber}) async {
+    // 1. Get Location Link
+    String? locationLink;
+    print("Attempting to get location for emergency message...");
+    try {
+      locationLink =
+      await _getCurrentLocationLink(); // Ensure this method is in BleService or accessible
+      if (locationLink != null) {
+        print("Location link generated: $locationLink");
+      } else {
+        print("Could not get location link.");
+      }
+    } catch (e) {
+      print("Error getting location link in makePhoneCall: $e");
+    }
+
+    // 2. Send SMS with Location to Emergency Contact (if provided)
+    if (emergencyContactNumber != null && emergencyContactNumber.isNotEmpty) {
+      String smsMessageBody = "Emergency! I might need help.";
+      if (locationLink != null) {
+        smsMessageBody += " My current location: $locationLink";
+      } else {
+        smsMessageBody += " I could not get my current location automatically.";
+      }
+
+      // Use url_launcher to send SMS
+      // Note: The 'sms:' scheme might require the country code for some devices/OS versions.
+      // For simplicity, using Uri.encodeComponent for the body.
+      final Uri smsUri = Uri(
+        scheme: 'sms',
+        path: emergencyContactNumber,
+        queryParameters: <String, String>{
+          'body': smsMessageBody,
+        },
+      );
+
+      try {
+        if (await canLaunchUrl(smsUri)) {
+          print("Attempting to launch SMS to $emergencyContactNumber");
+          await launchUrl(smsUri);
+        } else {
+          print('Could not launch SMS to $emergencyContactNumber.');
+          // Fallback or error message
+        }
+      } catch (e) {
+        print('Error launching SMS: $e');
+      }
+    } else {
+      print("No emergency contact number provided, skipping SMS.");
+    }
+
+    // 3. Display the link for the user if they are calling 911 (Optional UI update)
+    // This part would involve updating some state that your UI listens to.
+    // For example, if calling 911, you could set a global state variable with the locationLink
+    // that the FallDetectionOverlay or HomeScreen then displays.
+    if (phoneNumber ==
+        '+19058028483') { // Assuming this is your 911 placeholder
+      // Example: update a global stream or ValueNotifier that the UI listens to.
+      // globalLocationLinkForDisplay.value = locationLink;
+      print(
+          "Location link for 911 call (to be displayed to user): $locationLink");
+    }
+
+
+    // 4. Initiate the Voice Call (Your existing native call logic)
     var phonePermissionStatus = await Permission.phone.status;
     if (!phonePermissionStatus.isGranted) {
       if (!await Permission.phone
           .request()
           .isGranted) {
-        print("Phone permission denied.");
-        // Optionally, guide user to settings:
-        // await openAppSettings();
+        print("Phone permission denied for voice call.");
         return;
       }
     }
 
-    print("Attempting to make phone call to $phoneNumber via native method.");
+    print("Attempting to make voice call to $phoneNumber via native method.");
     try {
-      // Call the new native method
       final bool? speakerphoneActivated = await _callChannel.invokeMethod(
           'initiateEmergencyCallAndSpeaker', {'phoneNumber': phoneNumber});
 
@@ -550,7 +661,8 @@ class BleService {
       print("Failed to initiate call/speakerphone via MethodChannel: '${e
           .message}'. Details: ${e.details}");
     } catch (e) {
-      print("An unexpected error occurred in makePhoneCall: $e");
+      print(
+          "An unexpected error occurred in makePhoneCall (voice call part): $e");
     }
   }
 
