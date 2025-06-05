@@ -139,10 +139,13 @@ Future<void> _initializeMainAudioPlayer() async {
     await _mainAudioPlayer.setAudioContext(AudioContext(
       android: AudioContextAndroid(
         isSpeakerphoneOn: true,
+        // This is for the *alarm* player, not the call. Might be confusing.
+        // Consider if true is needed here or if it should be false.
         stayAwake: true,
         contentType: AndroidContentType.sonification,
         usageType: AndroidUsageType.alarm,
-        audioFocus: AndroidAudioFocus.gainTransientExclusive,
+        audioFocus: AndroidAudioFocus
+            .gainTransientExclusive, // Correct for an alarm
       ),
     ));
     await _mainAudioPlayer.setReleaseMode(ReleaseMode.loop);
@@ -241,11 +244,12 @@ Future<void> _showOrUpdateInteractiveFallNotification(
     // Large icon on the left.
 
     showProgress: true,
-    // Ensure progress bar is shown
     maxProgress: DEFAULT_FALL_COUNTDOWN_SECONDS,
-    progress: DEFAULT_FALL_COUNTDOWN_SECONDS -
-        currentNotificationCountdownSeconds,
-    // Correct progress direction
+    // MODIFIED LINE FOR COUNTDOWN (BAR EMPTIES)
+    progress: currentNotificationCountdownSeconds.clamp(
+      0,
+      DEFAULT_FALL_COUNTDOWN_SECONDS,
+    ),
     indeterminate: false,
     // Make sure it's a determinate progress bar
 
