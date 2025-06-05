@@ -139,10 +139,13 @@ Future<void> _initializeMainAudioPlayer() async {
     await _mainAudioPlayer.setAudioContext(AudioContext(
       android: AudioContextAndroid(
         isSpeakerphoneOn: true,
+        // This is for the *alarm* player, not the call. Might be confusing.
+        // Consider if true is needed here or if it should be false.
         stayAwake: true,
         contentType: AndroidContentType.sonification,
         usageType: AndroidUsageType.alarm,
-        audioFocus: AndroidAudioFocus.gainTransientExclusive,
+        audioFocus: AndroidAudioFocus
+            .gainTransientExclusive, // Correct for an alarm
       ),
     ));
     await _mainAudioPlayer.setReleaseMode(ReleaseMode.loop);
