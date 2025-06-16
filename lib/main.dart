@@ -5,6 +5,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart'; // For
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:google_sign_in/google_sign_in.dart';
@@ -455,7 +456,7 @@ Future<void> initializeAppServices() async {
   const AndroidNotificationChannel fallChannel = AndroidNotificationChannel(
     fallNotificationChannelId, 'Fall Alerts',
     description: 'Critical fall alerts with interactive options. Attempts Full-Screen display.',
-    importance: Importance.max, playSound: true, enableVibration: true,
+    importance: Importance.max, playSound: false, enableVibration: true,
   );
   const AndroidNotificationChannel serviceChannel = AndroidNotificationChannel(
     notificationChannelId, notificationChannelName,
@@ -530,6 +531,8 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await _initializeMainAudioPlayer();
+
+  // REMOVED lifecycle channel handler, as it's now handled in MyAppState
 
   const AndroidInitializationSettings initializationSettingsAndroid =
   AndroidInitializationSettings('@mipmap/ic_launcher');
@@ -716,6 +719,14 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     print("MyApp Lifecycle: $state. Fall active: $isCurrentlyHandlingFall");
+
+    // This is a reliable way to detect when the app is being terminated
+    if (state == AppLifecycleState.detached) {
+      final service = FlutterBackgroundService();
+      // This tells the background service to stop itself gracefully
+      service.invoke(bgServiceStopEvent);
+      print("MyApp: App state is detached. Invoking background service stop.");
+    }
   }
 
   @override

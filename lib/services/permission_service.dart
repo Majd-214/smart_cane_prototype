@@ -6,35 +6,33 @@ class PermissionService {
   static Future<bool> requestAllPermissions(BuildContext context) async {
     print("PERMISSION_SERVICE: Requesting all necessary permissions...");
 
-    // Define all permissions needed for core & background BLE, notifications, calls
+    // Define all permissions needed
     final List<Permission> permissionsToRequest = [
-      Permission.location, // Must be granted before locationAlways
+      Permission.location,
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
       Permission.notification,
       Permission.phone,
       Permission.systemAlertWindow,
+      Permission.sms, // <-- ADDED THIS LINE
+      Permission.microphone, // <-- ADDED THIS LINE
     ];
 
-    // Request the primary set
     Map<Permission, PermissionStatus> statuses =
-        await permissionsToRequest.request();
+    await permissionsToRequest.request();
 
     bool allGranted = true;
     List<String> deniedPermissions = [];
     List<Permission> permanentlyDenied = [];
     bool alertWindowNeeded = false;
 
-    // Check primary permissions
+    // Check permissions
     statuses.forEach((permission, status) {
       print("  Permission: $permission, Status: $status");
 
       if (permission == Permission.systemAlertWindow) {
         if (!status.isGranted) {
-          print("  WARNING: System Alert Window permission is NOT granted.");
           alertWindowNeeded = true;
-          // Don't mark as denied/allGranted = false *just* for this,
-          // but track that it needs special handling.
         }
       } else if (!status.isGranted && !status.isLimited) {
         allGranted = false;
@@ -45,7 +43,7 @@ class PermissionService {
       }
     });
 
-    // Request background location only if primary location is granted
+    // Check background location
     if (statuses[Permission.location]?.isGranted == true) {
       PermissionStatus bgStatus = await Permission.locationAlways.request();
       print("  Permission: ${Permission.locationAlways}, Status: $bgStatus");
@@ -65,12 +63,10 @@ class PermissionService {
     }
 
     if (!allGranted || alertWindowNeeded && context.mounted) {
-      print(
-          "PERMISSION_SERVICE: Some permissions were denied or need manual setup.");
       await _showPermissionDialog(
         context,
         deniedPermissions,
-        alertWindowNeeded, // Pass this flag
+        alertWindowNeeded,
         permanentlyDenied.isNotEmpty,
       );
     } else if (allGranted) {
@@ -87,15 +83,17 @@ class PermissionService {
     if (permission == Permission.bluetoothConnect) return "Bluetooth Connect";
     if (permission == Permission.notification) return "Notifications";
     if (permission == Permission.phone) return "Phone Calls";
-    // Add the name for System Alert Window
+    if (permission == Permission.sms) return "SMS Messages";
+    if (permission == Permission.microphone) return "Microphone";
     if (permission == Permission.systemAlertWindow)
       return "Display Over Other Apps";
     return permission.toString().split('.').last;
   }
 
+  // _showPermissionDialog remains the same
   static Future<void> _showPermissionDialog(BuildContext context,
       List<String> denied,
-      bool needsAlertWindow, // Added parameter
+      bool needsAlertWindow,
       bool isPermanent,) async {
     if (!context.mounted) return;
 
@@ -116,14 +114,14 @@ class PermissionService {
           content: Text(
             "The Smart Cane app needs these permissions:\n\n• ${denied.join(
                 '\n• ')}" +
-                alertWindowMessage + // Add the alert window message
+                alertWindowMessage +
                 "\n\n" + permanentMessage,
           ),
           actions: <Widget>[
             TextButton(
               child: const Text("Open Settings"),
               onPressed: () {
-                openAppSettings(); // This will open the app's settings page
+                openAppSettings();
                 Navigator.of(context).pop();
               },
             ),

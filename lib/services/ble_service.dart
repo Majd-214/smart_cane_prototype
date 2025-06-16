@@ -4,12 +4,12 @@ import 'dart:async';
 import 'package:flutter/services.dart'; // For PlatformChannel
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-// import 'package:flutter_phone_direct_caller/flutter_phone_direct_caller.dart'; // No longer needed for calling
+import 'package:geolocator/geolocator.dart';
+// import 'package:flutter_tts/flutter_tts.dart'; // REMOVED
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:smart_cane_prototype/services/background_service_handler.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:url_launcher/url_launcher.dart'; // Already in your project
+import 'package:url_launcher/url_launcher.dart';
 
 // ... (Keep your existing UUIDs and enums)
 const String SMART_CANE_SERVICE_UUID = "A5A20D8A-E137-4B30-9F30-1A7A91579C9C";
@@ -158,8 +158,8 @@ class BleService {
           timeLimit: Duration(seconds: 15) // Add a timeout
       );
 
-      return 'https://www.google.com/maps?q=${position.latitude},${position
-          .longitude}';
+      return 'https://www.google.com/maps/search/?api=1&query=${position
+          .latitude},${position.longitude}';
     } catch (e) {
       print('Error getting location: $e');
       return null;
@@ -177,7 +177,7 @@ class BleService {
         if (_currentConnectionState == BleConnectionState.bluetoothOff ||
             _currentConnectionState == BleConnectionState.unknown) {
           _updateConnectionState(BleConnectionState.disconnected);
-          _tryAutoConnectIfLatched();
+          // _tryAutoConnectIfLatched(); // DISABLED auto-connect
         }
       } else if (state == BluetoothAdapterState.off) {
         _updateConnectionState(BleConnectionState.bluetoothOff);
@@ -205,7 +205,7 @@ class BleService {
     });
     final initialState = await FlutterBluePlus.adapterState.first;
     if (initialState == BluetoothAdapterState.on) {
-      await _tryAutoConnectIfLatched();
+      // await _tryAutoConnectIfLatched(); // DISABLED auto-connect
     } else if (initialState == BluetoothAdapterState.off) {
       _updateConnectionState(BleConnectionState.bluetoothOff);
     } else if (initialState == BluetoothAdapterState.unauthorized) {
@@ -571,70 +571,50 @@ class BleService {
 
   Future<void> makePhoneCall(String phoneNumber,
       {String? emergencyContactNumber}) async {
-    // 1. Get Location Link
-    String? locationLink;
-    print("Attempting to get location for emergency message...");
+    // 1. Get Location
+    Position? position;
     try {
-      locationLink =
-      await _getCurrentLocationLink(); // Ensure this method is in BleService or accessible
-      if (locationLink != null) {
-        print("Location link generated: $locationLink");
-      } else {
-        print("Could not get location link.");
-      }
+      print("Attempting to get location for emergency message...");
+      position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 15),
+      );
     } catch (e) {
-      print("Error getting location link in makePhoneCall: $e");
+      print("Error getting location in makePhoneCall: $e");
     }
 
     // 2. Send SMS with Location to Emergency Contact (if provided)
     if (emergencyContactNumber != null && emergencyContactNumber.isNotEmpty) {
       String smsMessageBody = "Emergency! I might need help.";
-      if (locationLink != null) {
+      if (position != null) {
+        final String locationLink =
+            'https://www.google.com/maps/search/?api=1&query=${position
+            .latitude},${position.longitude}';
         smsMessageBody += " My current location: $locationLink";
       } else {
         smsMessageBody += " I could not get my current location automatically.";
       }
 
-      // Use url_launcher to send SMS
-      // Note: The 'sms:' scheme might require the country code for some devices/OS versions.
-      // For simplicity, using Uri.encodeComponent for the body.
       final Uri smsUri = Uri(
         scheme: 'sms',
         path: emergencyContactNumber,
         queryParameters: <String, String>{
-          'body': smsMessageBody,
+          'body': Uri.encodeComponent(smsMessageBody)
         },
       );
 
       try {
         if (await canLaunchUrl(smsUri)) {
-          print("Attempting to launch SMS to $emergencyContactNumber");
           await launchUrl(smsUri);
         } else {
           print('Could not launch SMS to $emergencyContactNumber.');
-          // Fallback or error message
         }
       } catch (e) {
         print('Error launching SMS: $e');
       }
-    } else {
-      print("No emergency contact number provided, skipping SMS.");
     }
 
-    // 3. Display the link for the user if they are calling 911 (Optional UI update)
-    // This part would involve updating some state that your UI listens to.
-    // For example, if calling 911, you could set a global state variable with the locationLink
-    // that the FallDetectionOverlay or HomeScreen then displays.
-    if (phoneNumber ==
-        '+19058028483') { // Assuming this is your 911 placeholder
-      // Example: update a global stream or ValueNotifier that the UI listens to.
-      // globalLocationLinkForDisplay.value = locationLink;
-      print(
-          "Location link for 911 call (to be displayed to user): $locationLink");
-    }
-
-
-    // 4. Initiate the Voice Call (Your existing native call logic)
+    // 3. Initiate the Voice Call
     var phonePermissionStatus = await Permission.phone.status;
     if (!phonePermissionStatus.isGranted) {
       if (!await Permission.phone
@@ -645,7 +625,6 @@ class BleService {
       }
     }
 
-    print("Attempting to make voice call to $phoneNumber via native method.");
     try {
       final bool? speakerphoneActivated = await _callChannel.invokeMethod(
           'initiateEmergencyCallAndSpeaker', {'phoneNumber': phoneNumber});
@@ -653,22 +632,36 @@ class BleService {
       if (speakerphoneActivated == true) {
         print(
             "Native method reported call initiated and speakerphone activated successfully.");
+        // 4. Speak the automated message after the call is initiated
+        if (phoneNumber == '+19058028483') { // Your 911 placeholder
+          String locationForSpeech = "an unknown location";
+          if (position != null) {
+            final lat = position.latitude.toStringAsFixed(5).replaceAll(
+                '.', ' point ');
+            final lon = position.longitude.toStringAsFixed(5).replaceAll(
+                '.', ' point ');
+            locationForSpeech =
+            "G P S coordinates: latitude $lat, longitude $lon.";
+          }
+          final String messageToSpeak =
+              "The User of this Smart Cane Device has Fallen and is not responding, please dispatch Emergency Medical Services to ${locationForSpeech}. A link to the location has been sent via text message.";
+
+          // Increase delay to 8 seconds to allow more time for call to be answered
+          await Future.delayed(const Duration(seconds: 8));
+
+          // Call the native method to speak the message
+          await _audioChannel.invokeMethod(
+              'speakMessage', {'message': messageToSpeak});
+        }
       } else {
         print(
             "Native method reported call initiated but speakerphone activation might have failed or was not confirmed.");
       }
     } on PlatformException catch (e) {
-      print("Failed to initiate call/speakerphone via MethodChannel: '${e
-          .message}'. Details: ${e.details}");
-    } catch (e) {
-      print(
-          "An unexpected error occurred in makePhoneCall (voice call part): $e");
+      print("Failed to initiate call/speakerphone/TTS via MethodChannel: '${e
+          .message}'.");
     }
   }
-
-  // Remove _setSpeakerphoneOn(bool on) as it's now part of the native call.
-  // If you still need a separate speakerphone toggle for other reasons,
-  // you can keep the _audioChannel and call setSpeakerphoneNative from MainActivity.
 
   Future<String?> getLatchedDeviceId() async {
     final prefs = await SharedPreferences.getInstance();
@@ -681,6 +674,7 @@ class BleService {
     _targetDeviceId = null;
   }
 
+  // This method is no longer called from initialize() to disable auto-connect
   Future<void> _tryAutoConnectIfLatched() async {
     _targetDeviceId = await getLatchedDeviceId();
     if (_targetDeviceId != null &&
